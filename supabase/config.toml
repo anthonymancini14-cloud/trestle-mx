@@ -1,0 +1,17 @@
+# Minimal Supabase CLI config for local development (`supabase start`).
+project_id = "trestle-mx"
+
+[api]
+port = 54321
+schemas = ["public"]
+
+[db]
+port = 54322
+major_version = 17
+
+[studio]
+port = 54323
+
+[auth]
+site_url = "http://localhost:3000"
+enable_signup = false

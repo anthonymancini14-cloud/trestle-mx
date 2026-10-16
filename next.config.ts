@@ -1,9 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  cacheComponents: false,
+  // Planning Mode reads its standards context from markdown at runtime.
+  outputFileTracingIncludes: {
+    "/api/ai/planning": ["./lib/anthropic/context/**/*.md"],
+    "/planning/[id]": ["./lib/anthropic/context/**/*.md"],
+  },
   turbopack: {
     rules: {
       "*.css": {
