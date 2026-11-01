@@ -1,6 +1,6 @@
 # Trestle.MX
 
-**An AI-native maintenance management system (CMMS) for industrial and utility plants, built around one idea: the planner's job plan is where reliability is won or lost.**
+**An AI-native maintenance management system (CMMS) for industrial, utility and data center maintenance, built around one idea: the planner's job plan is where reliability is won or lost.**
 
 Most CMMS products treat the work order as a form. Trestle.MX treats it as a process with six stages, and puts the most leverage at stage three. **Planning Mode** pairs the maintenance planner with Claude to turn a vetted work order into a job plan a crew can execute safely in one trip, grounded in safety standards, the plant's own work history, and what is actually on the storeroom shelf.
 
@@ -65,6 +65,22 @@ Without an `ANTHROPIC_API_KEY`, Planning Mode runs a scripted planner with hand-
 
 ---
 
+## Asset class library
+
+A fleet can only compare maintenance site to site if every site describes its equipment the same way. Trestle.MX holds one **asset class library per organization**; sites use it and cannot invent their own classes.
+
+| Each class defines | So that |
+|---|---|
+| **Required and optional nameplate fields** (typed: number with unit, pick-list, yes/no, text) | Every centrifugal pump carries flow, head, speed, configuration and seal type, at every site |
+| **Known failure modes** with ISO 14224 style codes and how each is detected | PM tasks and troubleshooting records point back to the failure they prevent or found |
+| **Verticals** it applies to (industrial/utility, data center) | One library serves a mixed portfolio; each site has a vertical |
+
+The starter library (`lib/taxonomy/library.ts`) has 29 classes and 108 failure modes, from centrifugal pumps and transformers to static UPS modules, battery strings, CRAHs and liquid-cooling CDUs. Classes are deliberately broad (configuration is an attribute, not a separate class) so each class has enough members to compare.
+
+The register shows **data quality against the standard**: share of assets classified, share with every required field, and which fields are missing. Incomplete assets can still be saved, because real registers are built up over time, but the gap is always visible. Planning Mode reads the asset's class, nameplate and failure modes, and names the suspected failure mode by code in the plan.
+
+---
+
 ## The work order lifecycle
 
 | Stage | Who | What happens |
@@ -105,19 +121,20 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Twelve tables, created in dependency order by the migrations in `supabase/migrations/`:
+Fourteen tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` → `area_codes` · `profiles` → `site_access` · `assets` (FLOC hierarchy) · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide) → `inventory` (per site)
+`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes` · `assets` (FLOC hierarchy, class and attributes) · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
 - Every operational table is scoped to a `site_id`. Policies check membership through a `site_access` table, not a column on `profiles`, so a user who works across several sites needs new rows, not a migration.
 - Role checks use a `SECURITY DEFINER` helper (`current_user_role()`) to avoid recursive RLS.
 - `wo_events` is append-only: insert as yourself, no update or delete policy.
+- The class library is readable from any site in the org and writable only by admins. Planners classify assets; they cannot change the standard. A trigger refuses an asset whose class belongs to another organization.
 - Work orders are never deleted, only rejected or closed.
 - `commit_work_order_plan()` and `issue_work_order_part()` are `SECURITY DEFINER` functions that re-check site access, role and stage before touching inventory, so a planner can reserve stock without having write access to the inventory table.
 
-The migrations and policies are tested against Postgres (idempotent re-run, cross-site isolation, role-gated plan commit).
+The migrations and policies are tested against Postgres (idempotent re-run, cross-site and cross-org isolation, role-gated plan commit, admin-only library changes).
 
 ---
 
@@ -159,7 +176,8 @@ app/
   (app)/dashboard           KPIs, lifecycle pipeline, "waiting on you"
   (app)/planning            Planning queue and Planning Mode
   (app)/work-orders         list, detail with stage actions, new
-  (app)/assets              FLOC registry and asset history
+  (app)/assets              FLOC registry, data quality, asset history
+  (app)/asset-classes       class library: data standard and failure modes per class
   (app)/inventory           storeroom
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
@@ -169,14 +187,16 @@ lib/
   data/                     Repository interface, demo and Supabase implementations
   anthropic/                Claude planner, prompt, context loader, site context (layer 3)
   planning/                 plan schema, stream protocol, scripted demo planner
+  taxonomy/                 asset class library and data-quality checks
   demo/                     fictional plant seed data
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library
 ```
 
 ## Design decisions
 
 - **The plan is structured data, not a chat transcript.** Chat is how the plan gets made; the plan is what gets committed, scheduled, kitted and measured.
+- **One standard, defended.** Asset classes belong to the organization, not the site. Data gaps are shown, not hidden, so the register earns trust instead of becoming a database nobody believes.
 - **History beats general knowledge.** The most valuable context is the closed work order on the sister unit. Debriefs are required at close-out because Planning Mode reads them.
 - **The assistant never commits.** It drafts and explains. The planner edits, confirms open questions and commits.
 - **Safety output is specific and marked for verification.** Named isolation points and energy types, never a bare "perform LOTO" step, and always subject to the site's written procedure.
@@ -185,7 +205,10 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 ## Roadmap
 
 - Planning session history saved per work order (`planning_sessions` table)
-- PM templates and generated preventive work orders
+- PM strategy: PM tasks linked to the failure modes they address, frequency by criticality, deferral rules, critical spares per class
+- Troubleshooting record: operator actions, findings and proven cause, coded against the class failure modes
+- Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
+- Data center sites: Layer 2 standards pack, redundancy model (N, N+1, 2N, A/B paths), MOP fields in the plan, vendor scope
 - Weekly schedule builder with crew capacity
 - Retrieval over OEM manuals as a fourth context layer
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner

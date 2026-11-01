@@ -1,16 +1,27 @@
 import "server-only";
 import type { Repository } from "@/lib/data/repository";
-import type { Asset, InventoryItem, Profile, WorkOrderDetail, WorkOrderListItem } from "@/types/domain";
+import { formatAttribute } from "@/lib/taxonomy/assess";
+import type {
+  Asset,
+  AssetClassWithModes,
+  InventoryItem,
+  Profile,
+  WorkOrderDetail,
+  WorkOrderListItem,
+} from "@/types/domain";
 
 /**
  * Layer 3: site-specific context assembled from the database for one work
- * order — the asset and its train, the asset's work history with debriefs,
- * stock on hand, and available crafts.
+ * order — the asset, its class and known failure modes, its train, the
+ * asset's work history with debriefs, stock on hand, and available crafts.
  */
 export interface SiteContext {
   workOrder: WorkOrderDetail;
   asset: Asset | null;
+  assetClass: AssetClassWithModes | null;
   related: Asset[];
+  /** Class names by id, for labelling related equipment. */
+  classNames: Map<string, string>;
   history: (WorkOrderListItem & { debrief: string | null })[];
   inventory: InventoryItem[];
   crew: Profile[];
@@ -21,14 +32,16 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
   const workOrder = await repo.getWorkOrder(woId);
   if (!workOrder) return null;
 
-  const [assets, inventory, profiles, { site }] = await Promise.all([
+  const [assets, classes, inventory, profiles, { site }] = await Promise.all([
     repo.listAssets(),
+    repo.listAssetClasses(),
     repo.listInventory(),
     repo.listProfiles(),
     repo.getSite(),
   ]);
 
   const asset = assets.find((a) => a.id === workOrder.asset_id) ?? null;
+  const assetClass = asset ? classes.find((c) => c.id === asset.class_id) ?? null : null;
   // The asset's train: parent, children and siblings (for duty/standby pairs, same class in the same area).
   const related = asset
     ? assets.filter(
@@ -36,7 +49,7 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
           a.id !== asset.id &&
           (a.id === asset.parent_id ||
             a.parent_id === asset.id ||
-            (a.area_id === asset.area_id && a.asset_class === asset.asset_class)),
+            (a.area_id === asset.area_id && a.class_id !== null && a.class_id === asset.class_id)),
       )
     : [];
 
@@ -51,7 +64,9 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
   return {
     workOrder,
     asset,
+    assetClass,
     related,
+    classNames: new Map(classes.map((c) => [c.id, c.name])),
     history,
     inventory,
     crew: profiles.filter((p) => p.role === "technician"),
@@ -74,13 +89,25 @@ export function formatSiteContext(ctx: SiteContext): string {
   if (a) {
     lines.push("", `## Asset ${a.floc}: ${a.name}`);
     lines.push(
-      `Class: ${a.asset_class}. Criticality: ${a.criticality}. Status: ${a.status}. Make/model: ${a.manufacturer ?? "?"} ${a.model ?? ""}. Installed: ${a.install_date ?? "unknown"}.`,
+      `Class: ${ctx.assetClass ? `${ctx.assetClass.name} (${ctx.assetClass.code})` : "unclassified"}. Criticality: ${a.criticality}. Status: ${a.status}. Make/model: ${a.manufacturer ?? "?"} ${a.model ?? ""}. Installed: ${a.install_date ?? "unknown"}.`,
     );
+    if (ctx.assetClass) {
+      const nameplate = ctx.assetClass.attributes
+        .filter((s) => a.attributes[s.key] !== undefined)
+        .map((s) => `${s.label} ${formatAttribute(s, a.attributes[s.key])}`);
+      const missing = ctx.assetClass.attributes.filter((s) => s.required && a.attributes[s.key] === undefined);
+      if (nameplate.length) lines.push(`Nameplate: ${nameplate.join("; ")}.`);
+      if (missing.length) lines.push(`Not on record: ${missing.map((s) => s.label).join(", ")}. Ask the planner or add to open questions if it matters for this job.`);
+    }
     if (a.notes) lines.push(`Notes: ${a.notes}`);
+  }
+  if (ctx.assetClass?.failure_modes.length) {
+    lines.push("", `## Known failure modes for the ${ctx.assetClass.name} class (code, mode, how it is detected)`);
+    for (const m of ctx.assetClass.failure_modes) lines.push(`- ${m.code} ${m.name}: ${m.description} Detected by: ${m.detection}`);
   }
   if (ctx.related.length) {
     lines.push("", "## Related equipment (same train or duty/standby set)");
-    for (const r of ctx.related) lines.push(`- ${r.floc} ${r.name} (${r.asset_class}, ${r.status})`);
+    for (const r of ctx.related) lines.push(`- ${r.floc} ${r.name} (${(r.class_id && ctx.classNames.get(r.class_id)) ?? "unclassified"}, ${r.status})`);
   }
 
   lines.push("", "## Closed work history on this equipment and its train, newest first");

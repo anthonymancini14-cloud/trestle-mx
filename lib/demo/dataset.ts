@@ -9,13 +9,17 @@ import {
   SITE,
   WO_DEFS,
   assetId,
+  classId,
   partId,
   personId,
 } from "./seed";
+import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import { WO_STAGES } from "@/types/domain";
 import type {
   AreaCode,
   Asset,
+  AssetClass,
+  FailureMode,
   InventoryRow,
   Organization,
   Part,
@@ -32,6 +36,8 @@ export interface Dataset {
   site: Site;
   areas: AreaCode[];
   profiles: Profile[];
+  assetClasses: AssetClass[];
+  failureModes: FailureMode[];
   assets: Asset[];
   parts: Part[];
   inventory: InventoryRow[];
@@ -42,6 +48,31 @@ export interface Dataset {
 }
 
 const DAY_MS = 86_400_000;
+
+/** The starter class library as the organization's rows. */
+export function buildClassLibrary(orgId: string): { assetClasses: AssetClass[]; failureModes: FailureMode[] } {
+  const assetClasses: AssetClass[] = [];
+  const failureModes: FailureMode[] = [];
+  let modeN = 0;
+  for (const def of ASSET_CLASS_LIBRARY) {
+    const id = classId(def.code);
+    assetClasses.push({
+      id,
+      org_id: orgId,
+      code: def.code,
+      name: def.name,
+      category: def.category,
+      verticals: [...def.verticals],
+      description: def.description,
+      attributes: def.attributes.map((a) => ({ ...a })),
+      is_active: true,
+    });
+    for (const m of def.failureModes) {
+      failureModes.push({ id: seedId("failureMode", ++modeN), class_id: id, ...m });
+    }
+  }
+  return { assetClasses, failureModes };
+}
 
 /** Expand the seed definitions into normalized rows with real timestamps. */
 export function buildDataset(now: Date = new Date()): Dataset {
@@ -191,7 +222,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
     site: SITE,
     areas: AREAS,
     profiles: PROFILES,
-    assets: ASSETS,
+    ...buildClassLibrary(ORG.id),
+    assets: ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
     parts: PARTS,
     inventory,
     workOrders,

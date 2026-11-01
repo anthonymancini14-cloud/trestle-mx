@@ -3,6 +3,7 @@ import { buildDataset, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
+  AssetClassWithModes,
   AssetDetail,
   InventoryItem,
   WoEvent,
@@ -101,6 +102,17 @@ export class DemoRepository implements Repository {
     };
   }
 
+  async listAssetClasses(): Promise<AssetClassWithModes[]> {
+    const db = store();
+    return db.assetClasses
+      .filter((c) => c.org_id === db.org.id && c.is_active)
+      .map((c) => ({
+        ...c,
+        failure_modes: db.failureModes.filter((m) => m.class_id === c.id).sort((a, b) => a.code.localeCompare(b.code)),
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+  }
+
   async listAssets() {
     return [...store().assets].sort((a, b) => a.floc.localeCompare(b.floc));
   }
@@ -110,9 +122,11 @@ export class DemoRepository implements Repository {
     const asset = db.assets.find((a) => a.id === id);
     if (!asset) return null;
     const parent = asset.parent_id ? db.assets.find((a) => a.id === asset.parent_id) : undefined;
+    const classes = await this.listAssetClasses();
     return {
       ...asset,
       area: db.areas.find((a) => a.id === asset.area_id)!,
+      asset_class: classes.find((c) => c.id === asset.class_id) ?? null,
       parent: parent ? { id: parent.id, floc: parent.floc, name: parent.name } : null,
       children: db.assets
         .filter((a) => a.parent_id === id)

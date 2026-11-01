@@ -15,6 +15,8 @@ const TABLE_KEYS = {
   part: "009",
   inventory: "00a",
   woPart: "00b",
+  assetClass: "00c",
+  failureMode: "00d",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

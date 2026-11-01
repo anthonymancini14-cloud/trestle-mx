@@ -51,6 +51,15 @@ export type Priority = 1 | 2 | 3 | 4;
 export type Criticality = "A" | "B" | "C";
 export type Craft = "mechanical" | "electrical" | "instrumentation" | "operations" | "contractor";
 
+/** Industry vertical. Set per site; asset classes declare which verticals use them. */
+export const VERTICALS = ["industrial_utility", "data_center"] as const;
+export type Vertical = (typeof VERTICALS)[number];
+
+export const VERTICAL_LABELS: Record<Vertical, string> = {
+  industrial_utility: "Industrial & utility",
+  data_center: "Data center",
+};
+
 export interface Organization {
   id: string;
   name: string;
@@ -62,6 +71,7 @@ export interface Site {
   code: string;
   name: string;
   timezone: string;
+  vertical: Vertical;
 }
 
 export interface AreaCode {
@@ -86,7 +96,10 @@ export interface Asset {
   parent_id: string | null;
   floc: string;
   name: string;
-  asset_class: string;
+  /** The controlled asset class from the org's class library. Null means unclassified. */
+  class_id: string | null;
+  /** Class-specific nameplate data, keyed by the class's attribute keys. */
+  attributes: AssetAttributes;
   criticality: Criticality;
   manufacturer: string | null;
   model: string | null;
@@ -94,6 +107,64 @@ export interface Asset {
   install_date: string | null;
   status: "running" | "standby" | "down" | "retired";
   notes: string | null;
+}
+
+export type AttributeValue = string | number | boolean;
+export type AssetAttributes = Record<string, AttributeValue>;
+
+export type AttributeType = "text" | "number" | "enum" | "boolean";
+
+/** One field an asset class requires or allows. */
+export interface AttributeSpec {
+  key: string;
+  label: string;
+  type: AttributeType;
+  unit?: string;
+  /** Allowed values when type is "enum". */
+  options?: readonly string[];
+  required: boolean;
+}
+
+export const CLASS_CATEGORIES = [
+  "Rotating",
+  "Electrical power",
+  "Static and pressure",
+  "Valves",
+  "Instrumentation and controls",
+  "HVAC and cooling",
+  "Fire protection",
+] as const;
+export type ClassCategory = (typeof CLASS_CATEGORIES)[number];
+
+/**
+ * A failure mode in ISO 14224 terms: the observed way the equipment stops
+ * doing its job. Mechanisms (wear, fatigue, corrosion) and causes are coded
+ * separately when a work order is resolved.
+ */
+export interface FailureMode {
+  id: string;
+  class_id: string;
+  code: string;
+  name: string;
+  description: string;
+  /** How the failure mode is found before or when it happens. */
+  detection: string;
+}
+
+export interface AssetClass {
+  id: string;
+  org_id: string;
+  code: string;
+  name: string;
+  category: ClassCategory;
+  verticals: Vertical[];
+  description: string;
+  attributes: AttributeSpec[];
+  is_active: boolean;
+}
+
+export interface AssetClassWithModes extends AssetClass {
+  failure_modes: FailureMode[];
 }
 
 export interface WorkOrder {
@@ -205,6 +276,7 @@ export interface WorkOrderDetail extends WorkOrderListItem {
 
 export interface AssetDetail extends Asset {
   area: AreaCode;
+  asset_class: AssetClassWithModes | null;
   parent: Pick<Asset, "id" | "floc" | "name"> | null;
   children: Pick<Asset, "id" | "floc" | "name" | "status">[];
   history: WorkOrderListItem[];

@@ -65,6 +65,8 @@ async function main() {
     "site_access",
     db.profiles.map((p) => ({ user_id: mapPerson(p.id), site_id: db.site.id })),
   );
+  await insert("asset_classes", db.assetClasses);
+  await insert("asset_class_failure_modes", db.failureModes);
   // Parents first so the self-reference resolves.
   await insert("assets", db.assets.map((a) => ({ ...a, parent_id: null })));
   await insert("assets", db.assets.filter((a) => a.parent_id));

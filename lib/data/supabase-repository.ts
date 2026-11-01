@@ -5,6 +5,7 @@ import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repositor
 import type {
   AreaCode,
   Asset,
+  AssetClassWithModes,
   AssetDetail,
   InventoryItem,
   InventoryRow,
@@ -119,19 +120,37 @@ export class SupabaseRepository implements Repository {
     if (error) throw new Error(error.message);
     if (!data) return null;
     const asset = data as Asset & { area: AreaCode };
-    const [parent, children, history] = await Promise.all([
+    const [parent, children, history, assetClass] = await Promise.all([
       asset.parent_id
         ? this.db.from("assets").select("id, floc, name").eq("id", asset.parent_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       this.db.from("assets").select("id, floc, name, status").eq("parent_id", id).order("floc"),
       this.listWorkOrders({ assetId: id }),
+      asset.class_id
+        ? this.db.from("asset_classes").select("*, failure_modes:asset_class_failure_modes(*)").eq("id", asset.class_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
     ]);
     return {
       ...asset,
+      asset_class: assetClass.data ? sortModes(assetClass.data as AssetClassWithModes) : null,
       parent: (parent.data as AssetDetail["parent"]) ?? null,
       children: unwrap<AssetDetail["children"]>(children),
       history,
     };
+  }
+
+  async listAssetClasses() {
+    const { org } = await this.getSite();
+    const rows = unwrap<AssetClassWithModes[]>(
+      await this.db
+        .from("asset_classes")
+        .select("*, failure_modes:asset_class_failure_modes(*)")
+        .eq("org_id", org.id)
+        .eq("is_active", true)
+        .order("category")
+        .order("name"),
+    );
+    return rows.map(sortModes);
   }
 
   async listInventory() {
@@ -221,4 +240,8 @@ export class SupabaseRepository implements Repository {
 
 function unwrapVoid(result: { error: { message: string } | null }): void {
   if (result.error) throw new Error(result.error.message);
+}
+
+function sortModes(c: AssetClassWithModes): AssetClassWithModes {
+  return { ...c, failure_modes: [...(c.failure_modes ?? [])].sort((a, b) => a.code.localeCompare(b.code)) };
 }
