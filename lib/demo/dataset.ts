@@ -96,9 +96,15 @@ export function buildDataset(now: Date = new Date()): Dataset {
     const status = def.status ?? "open";
     const stageIndex = WO_STAGES.indexOf(def.stage);
     const createdAt = at(def.createdDaysAgo);
-    // Spread stage changes evenly between creation and "now" (or close-out).
-    const span = Math.max(def.createdDaysAgo, 0.5);
-    const stepDays = span / (stageIndex + 2);
+    // Open work spreads its stage changes between creation and now. Closed work
+    // runs over a realistic duration for its priority and was closed back then,
+    // so history reads as history (and Planning Mode sees real dates).
+    const closed = status === "closed";
+    const duration = closed ? closedDuration(def) : Math.max(def.createdDaysAgo, 0.5);
+    const stageDaysAgo = (s: number) =>
+      closed
+        ? def.createdDaysAgo - duration * CLOSED_STAGE_AT[s]
+        : def.createdDaysAgo - (duration / (stageIndex + 2)) * s;
 
     events.push({
       id: seedId("event", ++eventN),
@@ -120,10 +126,10 @@ export function buildDataset(now: Date = new Date()): Dataset {
         to_stage: to,
         note: to === "scheduling" && def.planSummary ? def.planSummary : null,
         actor_id: stageActor(to),
-        created_at: at(def.createdDaysAgo - stepDays * s),
+        created_at: at(stageDaysAgo(s)),
       });
     }
-    const closedAt = status === "closed" ? at(Math.max(def.createdDaysAgo - span + 1, 0)) : null;
+    const closedAt = closed ? at(def.createdDaysAgo - duration) : null;
     if (status === "closed") {
       events.push({
         id: seedId("event", ++eventN),
@@ -145,7 +151,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
         to_stage: null,
         note: def.rejectNote ?? null,
         actor_id: personId("Sam"),
-        created_at: at(def.createdDaysAgo - 1),
+        // The gatekeeper rejects within a day of the request reaching vetting.
+        created_at: at(Math.max(stageDaysAgo(stageIndex) - 1, 0)),
       });
     }
 
@@ -170,15 +177,15 @@ export function buildDataset(now: Date = new Date()): Dataset {
       scheduled_date:
         def.scheduledInDays !== undefined
           ? dateIn(def.scheduledInDays)
-          : status === "closed" || def.stage === "closure"
-            ? closedAt?.slice(0, 10) ?? dateIn(-2)
+          : stageIndex >= WO_STAGES.indexOf("execution")
+            ? at(stageDaysAgo(WO_STAGES.indexOf("execution"))).slice(0, 10)
             : null,
       estimated_hours: estHours,
       actual_hours: def.actualHours ?? null,
       plan_summary: def.planSummary ?? null,
       debrief: status === "closed" ? def.debrief ?? null : null,
       created_at: createdAt,
-      updated_at: closedAt ?? at(Math.max(def.createdDaysAgo - stepDays * stageIndex, 0)),
+      updated_at: closedAt ?? at(Math.max(stageDaysAgo(stageIndex) - (status === "rejected" ? 1 : 0), 0)),
       closed_at: closedAt,
     });
 
@@ -231,6 +238,22 @@ export function buildDataset(now: Date = new Date()): Dataset {
     woParts,
     events,
   };
+}
+
+/**
+ * Where each stage change falls within a closed job's duration (0 = opened,
+ * 1 = closed). Vetting is quick, planning and waiting for a slot take most of
+ * the time, and the work itself is near the end.
+ */
+const CLOSED_STAGE_AT = [0, 0.05, 0.2, 0.55, 0.8, 0.92];
+
+/** Days from opened to closed, by priority, unless the seed says otherwise. */
+const CLOSE_AFTER_DAYS: Record<1 | 2 | 3 | 4, number> = { 1: 1, 2: 9, 3: 16, 4: 35 };
+
+function closedDuration(def: (typeof WO_DEFS)[number]): number {
+  const days = def.closedAfterDays ?? CLOSE_AFTER_DAYS[def.priority];
+  // Never close in the future or today: leave at least half a day.
+  return Math.min(days, Math.max(def.createdDaysAgo - 0.5, 0.25));
 }
 
 function stageActor(stage: (typeof WO_STAGES)[number]): string {

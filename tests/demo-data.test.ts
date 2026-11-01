@@ -54,6 +54,34 @@ describe("demo dataset", () => {
   });
 });
 
+describe("demo timeline realism", () => {
+  const now = new Date("2026-10-16T12:00:00Z").getTime();
+  const DAY = 86_400_000;
+
+  it("closes past work in the past, after a believable duration", () => {
+    const closed = db.workOrders.filter((w) => w.status === "closed");
+    expect(closed.length).toBeGreaterThan(0);
+    for (const w of closed) {
+      const opened = Date.parse(w.created_at);
+      const done = Date.parse(w.closed_at!);
+      expect(done, w.wo_number).toBeGreaterThan(opened);
+      expect(done, w.wo_number).toBeLessThan(now);
+      expect((done - opened) / DAY, w.wo_number).toBeLessThanOrEqual(40);
+      expect(w.scheduled_date! <= w.closed_at!.slice(0, 10), w.wo_number).toBe(true);
+    }
+    // Closed history is spread over months, not stacked on one day.
+    expect(new Set(closed.map((w) => w.closed_at!.slice(0, 7))).size).toBeGreaterThan(1);
+  });
+
+  it("records every work order's stage history in order", () => {
+    for (const w of db.workOrders) {
+      const times = db.events.filter((e) => e.wo_id === w.id).map((e) => Date.parse(e.created_at));
+      expect([...times].sort((a, b) => a - b), w.wo_number).toEqual(times);
+      expect(Math.max(...times), w.wo_number).toBeLessThanOrEqual(now);
+    }
+  });
+});
+
 describe("demo Planning Mode scripts", () => {
   const catalog = new Set(db.parts.map((p) => p.part_number));
 

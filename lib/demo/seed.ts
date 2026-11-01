@@ -268,6 +268,8 @@ export interface WoDef {
   reportedBy: string;
   assignedTo?: string;
   createdDaysAgo: number;
+  /** Closed work only: days from opened to closed. Defaults by priority in dataset.ts. */
+  closedAfterDays?: number;
   scheduledInDays?: number;
   estHours?: number;
   actualHours?: number;
