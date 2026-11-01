@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { DemoRepository, resetDemoStore } from "@/lib/data/demo-repository";
-import { personId } from "@/lib/demo/seed";
+import { personId, SITE } from "@/lib/demo/seed";
 import { runDemoPlanningTurn } from "@/lib/planning/demo-planner";
 import { DEMO_SCRIPTS } from "@/lib/planning/demo-plans";
 import type { JobPlan, PlanningStreamEvent } from "@/lib/planning/plan-schema";
@@ -60,7 +60,7 @@ describe("committing a plan (demo repository)", () => {
   beforeEach(() => resetDemoStore());
 
   it("writes steps and parts, reserves stock and moves to Scheduling", async () => {
-    const repo = new DemoRepository();
+    const repo = new DemoRepository(SITE.id);
     const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === "WO-26-1031")!;
     const before = (await repo.listInventory()).find((i) => i.part.part_number === "MX-BRG-22220")!;
 
@@ -78,7 +78,7 @@ describe("committing a plan (demo repository)", () => {
   });
 
   it("leaves short parts as planned instead of over-reserving", async () => {
-    const repo = new DemoRepository();
+    const repo = new DemoRepository(SITE.id);
     const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === "WO-26-1035")!;
     await repo.commitPlan(wo.id, DEMO_SCRIPTS["WO-26-1035"].plan, personId("Marcus"));
     const after = await repo.getWorkOrder(wo.id);

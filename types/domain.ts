@@ -51,6 +51,15 @@ export type Priority = 1 | 2 | 3 | 4;
 export type Criticality = "A" | "B" | "C";
 export type Craft = "mechanical" | "electrical" | "instrumentation" | "operations" | "contractor";
 
+/** Industry vertical. Set per site; asset classes declare which verticals use them. */
+export const VERTICALS = ["industrial_utility", "data_center"] as const;
+export type Vertical = (typeof VERTICALS)[number];
+
+export const VERTICAL_LABELS: Record<Vertical, string> = {
+  industrial_utility: "Industrial & utility",
+  data_center: "Data center",
+};
+
 export interface Organization {
   id: string;
   name: string;
@@ -62,6 +71,7 @@ export interface Site {
   code: string;
   name: string;
   timezone: string;
+  vertical: Vertical;
 }
 
 export interface AreaCode {
@@ -86,7 +96,10 @@ export interface Asset {
   parent_id: string | null;
   floc: string;
   name: string;
-  asset_class: string;
+  /** The controlled asset class from the org's class library. Null means unclassified. */
+  class_id: string | null;
+  /** Class-specific nameplate data, keyed by the class's attribute keys. */
+  attributes: AssetAttributes;
   criticality: Criticality;
   manufacturer: string | null;
   model: string | null;
@@ -94,6 +107,65 @@ export interface Asset {
   install_date: string | null;
   status: "running" | "standby" | "down" | "retired";
   notes: string | null;
+}
+
+export type AttributeValue = string | number | boolean;
+export type AssetAttributes = Record<string, AttributeValue>;
+
+export type AttributeType = "text" | "number" | "enum" | "boolean";
+
+/** One field an asset class requires or allows. */
+export interface AttributeSpec {
+  key: string;
+  label: string;
+  type: AttributeType;
+  unit?: string;
+  /** Allowed values when type is "enum". */
+  options?: readonly string[];
+  required: boolean;
+}
+
+export const CLASS_CATEGORIES = [
+  "Rotating",
+  "Electrical power",
+  "Static and pressure",
+  "Valves",
+  "Instrumentation and controls",
+  "HVAC and cooling",
+  "Fire protection",
+  "IT space and cabling",
+] as const;
+export type ClassCategory = (typeof CLASS_CATEGORIES)[number];
+
+/**
+ * A failure mode in ISO 14224 terms: the observed way the equipment stops
+ * doing its job. Mechanisms (wear, fatigue, corrosion) and causes are coded
+ * separately when a work order is resolved.
+ */
+export interface FailureMode {
+  id: string;
+  class_id: string;
+  code: string;
+  name: string;
+  description: string;
+  /** How the failure mode is found before or when it happens. */
+  detection: string;
+}
+
+export interface AssetClass {
+  id: string;
+  org_id: string;
+  code: string;
+  name: string;
+  category: ClassCategory;
+  verticals: Vertical[];
+  description: string;
+  attributes: AttributeSpec[];
+  is_active: boolean;
+}
+
+export interface AssetClassWithModes extends AssetClass {
+  failure_modes: FailureMode[];
 }
 
 export interface WorkOrder {
@@ -156,6 +228,33 @@ export interface WoEvent {
   created_at: string;
 }
 
+/**
+ * Cable stock in the storeroom: what it is, its dimensions and how each end
+ * is terminated, so a technician can pick the exact replacement.
+ */
+export interface CableSpec {
+  kind: "cable";
+  media: "Fiber" | "Copper data" | "Power";
+  /** e.g. "OS2 single-mode trunk", "Cat6A S/FTP patch cord", "208 V 3-phase power whip". */
+  cable_type: string;
+  /** Fiber count or conductor count. */
+  count: number;
+  /** Conductor gauge for copper and power (e.g. "26 AWG"), or fiber type (e.g. "OS2 9/125"). */
+  gauge: string;
+  /** Length in meters; null for bulk reels sold by the meter. */
+  length_m: number | null;
+  outer_diameter_mm: number;
+  /** Jacket or listing, e.g. "OFNP plenum", "CMP plenum", "LSZH". */
+  jacket: string;
+  termination_a: string;
+  termination_b: string;
+  /** Fiber polarity method, e.g. "Type B". */
+  polarity?: string;
+  color?: string;
+}
+
+export type PartSpecs = CableSpec;
+
 export interface Part {
   id: string;
   org_id: string;
@@ -166,6 +265,8 @@ export interface Part {
   category: string;
   unit: string;
   unit_cost: number;
+  /** Structured specification for parts that need one (cables). */
+  specs: PartSpecs | null;
 }
 
 export interface InventoryRow {
@@ -205,10 +306,31 @@ export interface WorkOrderDetail extends WorkOrderListItem {
 
 export interface AssetDetail extends Asset {
   area: AreaCode;
+  asset_class: AssetClassWithModes | null;
   parent: Pick<Asset, "id" | "floc" | "name"> | null;
   children: Pick<Asset, "id" | "floc" | "name" | "status">[];
   history: WorkOrderListItem[];
+  /** For a cable: the tray sections it runs through, end A to end B. */
+  route: RouteStep[];
+  /** For a pathway: the cables routed through it. */
+  carried_cables: Pick<Asset, "id" | "floc" | "name" | "status" | "attributes">[];
 }
+
+/**
+ * One section of a cable's route: the cable runs through this pathway asset
+ * (a cable tray section) in this order, from end A to end B.
+ */
+export interface CableRouteSegment {
+  id: string;
+  cable_id: string;
+  seq: number;
+  pathway_id: string;
+  note: string | null;
+}
+
+export type RouteStep = Pick<CableRouteSegment, "seq" | "note"> & {
+  pathway: Pick<Asset, "id" | "floc" | "name" | "attributes">;
+};
 
 export interface InventoryItem extends InventoryRow {
   part: Part;

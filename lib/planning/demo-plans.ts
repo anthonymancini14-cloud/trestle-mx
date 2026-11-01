@@ -231,7 +231,111 @@ const gen703Plan: JobPlan = {
   open_questions: ["Book the load bank contractor and confirm cable lengths to the connection point.", "Check engine hours to see if the oil service is due."],
 };
 
+// ----------------------------------------------------------------------------
+// WO-26-2007  Fiber trunk CBL-0101 high loss on links to cabinet A03 (Cedar Flats)
+// ----------------------------------------------------------------------------
+
+const cbl0101Plan: JobPlan = {
+  summary:
+    "Replace fiber trunk CFD-DH1-CBL-0101 (ODF-01 panel 2 to cabinet A03) like for like with a 45 m MPO-24 OS2 trunk, laid in through the same three tray sections and dressed onto the A03 waterfall. Remove the damaged trunk and test every lane before handing links back.",
+  likely_cause:
+    "Bend damage where the trunk drops into A03. Evidence: the OTDR event at about 38 m is at the A03 end of a 41 m trunk, where it leaves CFD-DH1-CT-A; and the WO-26-2001 debrief says this trunk was left resting on the tray edge with a tight bend because it couldn't be re-dressed while live. A hypothesis until the drop is inspected.",
+  suspected_failure_mode: "STD",
+  requires_shutdown: true,
+  estimated_duration_hours: 5,
+  permits: ["Approved change window and MOP (network path)", "Personnel lift use in the data hall"],
+  hazards: [
+    {
+      hazard: "Working above live GPU cabinets, with the energized power tray tier (CFD-DH1-CT-PA) 12 in below the data tray",
+      control: "Lift in the aisle, nothing set on cabinet tops, work only in the data tier; the power tray stays closed and untouched.",
+    },
+    { hazard: "Laser light from live ports on neighboring trunks", control: "Never look into a connector; cap every end; inspect only through a scope." },
+    { hazard: "Fiber shards when cutting out the old trunk", control: "Safety glasses and a shard disposal container at the work point." },
+  ],
+  isolation_points: [
+    {
+      tag: "CFD-MMR-ODF-01 panel 2, MPO port 1",
+      energy: "optical (laser)",
+      method: "Network operations shuts the remaining links on this trunk; confirm no light with a power meter before disconnecting.",
+    },
+    {
+      tag: "CFD-DH1-CAB-A03 fiber cassette, MPO port 1",
+      energy: "optical (laser)",
+      method: "Same check at the cabinet end; cap the transceiver-side ports.",
+    },
+  ],
+  tasks: [
+    { seq: 10, description: "Confirm the change window is approved and network operations has moved all 12 links on CBL-0101; confirm CBL-0102 (A04) is not affected", craft: "operations", crew_size: 1, est_hours: 0.5, safety_note: null, acceptance_criteria: "Written go-ahead from network operations in the MOP." },
+    { seq: 20, description: "Set up the lift in the row A aisle under CFD-DH1-CT-A at A03; inspect the A03 drop and photograph the bend as found", craft: "contractor", crew_size: 2, est_hours: 0.5, safety_note: "Lift outriggers on solid floor; protect raised floor tiles.", acceptance_criteria: "As-found photos attached to the work order." },
+    { seq: 30, description: "Disconnect CBL-0101 at ODF-01 panel 2 port 1 and at the A03 cassette, cap both ends, cut the old trunk free and remove it from CFD-DH1-CT-A, CFD-DH1-CT-X1 and CFD-MMR-CT-01", craft: "contractor", crew_size: 2, est_hours: 1.5, safety_note: "Leave CBL-0102 in place and don't disturb it at the A04 drop.", acceptance_criteria: "Old trunk fully out of all three tray sections." },
+    { seq: 40, description: "Lay in the new 45 m trunk along the same route, CFD-MMR-CT-01 → CFD-DH1-CT-X1 → CFD-DH1-CT-A, and dress it onto the A03 waterfall; store slack at the A03 end", craft: "contractor", crew_size: 2, est_hours: 1.5, safety_note: "Bend radius at least 90 mm while laying in (20 × 4.5 mm OD) and at least 45 mm once dressed (10 × OD). Lay in by hand; never pull on the connectors.", acceptance_criteria: "No bend tighter than 45 mm anywhere; trunk on the waterfall radius, not the tray edge." },
+    { seq: 50, description: "Inspect and clean both MPO end faces, then mate at ODF-01 panel 2 port 1 and the A03 cassette port 1", craft: "instrumentation", crew_size: 1, est_hours: 0.5, safety_note: null, acceptance_criteria: "Scope image passes on both end faces before mating." },
+    { seq: 60, description: "Test every lane with a light source and power meter against the link loss budget, then OTDR from the MMR end", craft: "instrumentation", crew_size: 1, est_hours: 0.75, safety_note: null, acceptance_criteria: "All lanes within the loss budget; no bend event at the A03 drop on the OTDR trace. Results saved to the work order." },
+    { seq: 70, description: "Label both ends CFD-DH1-CBL-0101, update the cable record with the installed length, hand the links back to network operations", craft: "operations", crew_size: 1, est_hours: 0.25, safety_note: null, acceptance_criteria: "Network operations confirms all links up and error-free." },
+  ],
+  parts: [
+    { part_number: "MX-FIB-MPO24-OS2-45M", description: "Fiber trunk, MPO-24 female to MPO-24 female, OS2, 45 m, plenum, Type B", qty: 1 },
+    { part_number: "MX-LBL-CABLE-606", description: "Self-laminating cable labels", qty: 1 },
+  ],
+  tools: ["Fiber inspection scope with MPO tip and MPO cleaner", "MPO light source and power meter", "OTDR with MPO launch cable", "Personnel lift", "Fiber shard disposal container"],
+  references: [
+    { source: "WO-26-2001 (row A waterfalls)", note: "Debrief: CBL-0101 left on the tray edge with a tight bend at the A03 drop; recommended re-dress or replace. This plan acts on it." },
+    { source: "Cable plant (layer 2)", note: "Bend radius 20× OD pulling, 10× installed; inspect and clean before mating; remove abandoned cable." },
+    { source: "Storeroom spec MX-FIB-MPO24-OS2-45M", note: "Same fiber type, count, connector, polish and Type B polarity as the existing channel. 1 available." },
+  ],
+  open_questions: [
+    "Confirm with network operations that all 12 links on CBL-0101 can move, and book the change window.",
+    "Installed length is 41 m, so the 45 m trunk leaves about 4 m of slack to store at A03. Confirm there is room in the A03 slack manager.",
+    "Only one 45 m trunk is in stock. If it's used here, reorder so the A04 trunk has a spare.",
+  ],
+};
+
+const cbl0101Turns: DemoTurn[] = [
+  {
+    match: ["re-dress", "redress", "instead of replac", "just straighten"],
+    prompt: "Can we just re-dress it instead of replacing it?",
+    reply:
+      "Maybe, but don't count on it. A 0.9 dB event on single-mode usually means the fiber is damaged, not only bent, and a re-dress takes most of the same outage. I added a hold point at step 25: straighten the bend at the drop and re-shoot the OTDR. If the event clears, re-dress onto the waterfall, test and stop there. If it doesn't, carry on with the replacement. Either way the outage window doesn't change.",
+    revise: (plan) => ({
+      ...plan,
+      tasks: [
+        ...plan.tasks.filter((t) => t.seq <= 20),
+        {
+          seq: 25,
+          description: "Hold point: ease the bend at the A03 drop and re-shoot the OTDR from the MMR end. If the event clears, dress onto the waterfall, go to step 60 and stop; if not, continue with step 30",
+          craft: "instrumentation",
+          crew_size: 1,
+          est_hours: 0.5,
+          safety_note: null,
+          acceptance_criteria: "Decision recorded: re-dress or replace, with the OTDR trace attached.",
+        },
+        ...plan.tasks.filter((t) => t.seq > 20),
+      ],
+    }),
+  },
+  {
+    match: ["old trunk", "abandon", "leave it in", "leave the old"],
+    prompt: "Do we have to pull the old trunk out?",
+    reply:
+      "Yes. The NEC requires removing the accessible portion of abandoned optical fiber cable, and leaving it in CFD-DH1-CT-A would use up tray fill the row needs for growth. Step 30 already takes it out of all three sections. I added a line to step 70 so the record shows it was removed, not just replaced.",
+    revise: (plan) => ({
+      ...plan,
+      tasks: plan.tasks.map((t) =>
+        t.seq === 70
+          ? { ...t, description: `${t.description}; record the old trunk as removed from CFD-MMR-CT-01, CFD-DH1-CT-X1 and CFD-DH1-CT-A` }
+          : t,
+      ),
+    }),
+  },
+];
+
 export const DEMO_SCRIPTS: Record<string, DemoScript> = {
+  "WO-26-2007": {
+    intro:
+      "Here's a draft to replace trunk CBL-0101. The best evidence is in your own history: the WO-26-2001 debrief says this trunk was left on the edge of the row A tray with a tight bend at the A03 drop, because it couldn't be re-dressed while live. The OTDR event at 38 m of a 41 m trunk is right at that drop.\n\nThe plan lays a new 45 m trunk through the same three tray sections, CFD-MMR-CT-01, CFD-DH1-CT-X1 and CFD-DH1-CT-A, and dresses it onto the A03 waterfall this time. Bend radius limits come from the 4.5 mm outer diameter in the storeroom spec: 90 mm while laying in, 45 mm once dressed. There's exactly one 45 m trunk in stock, so I flagged a reorder.",
+    plan: cbl0101Plan,
+    turns: cbl0101Turns,
+  },
   "WO-26-1031": {
     intro:
       "Here's a first draft. The big input is history: P-201A had the same failure in the spring (WO-26-1009) and overran by 3.5 hours because nobody planned for soft foot or the heavier chain fall. I built both into this plan, so it's 14 hours, not the 12 that job was planned at.\n\nThe vibration trend on B (0.14 to 0.21 to 0.42 in/s) and the metallic sheen in the last oil change point at the inboard bearing. I listed misalignment as the leading cause, since that's what the sister pump showed. Bearings, gasket and shims are all in stock.",

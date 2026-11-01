@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { CableRoutePanel } from "@/components/assets/cable-panels";
 import { LifecycleStepper } from "@/components/work-orders/lifecycle-stepper";
 import { PartsTable } from "@/components/work-orders/parts-table";
 import { TaskList } from "@/components/work-orders/task-list";
@@ -16,6 +17,9 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
   const { profile, repo } = await getViewer();
   const [wo, profiles] = await Promise.all([repo.getWorkOrder(id), repo.listProfiles()]);
   if (!wo) notFound();
+  // Cable work: show the route so the crew knows which tray sections to work in.
+  const asset = wo.asset ? await repo.getAsset(wo.asset.id) : null;
+  const cableRoute = asset?.asset_class?.code === "CABLE" ? asset : null;
 
   const actions = availableActions(profile.role, wo);
   const nameOf = (pid: string | null) => profiles.find((p) => p.id === pid)?.full_name ?? "—";
@@ -96,6 +100,8 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
               <TaskList woId={wo.id} tasks={wo.tasks} canComplete={actions.includes("complete_task")} />
             )}
           </Panel>
+
+          {cableRoute && <CableRoutePanel attributes={cableRoute.attributes} route={cableRoute.route} />}
 
           <Panel>
             <PanelHeader eyebrow="Materials" title="Parts" />

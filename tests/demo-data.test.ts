@@ -24,12 +24,36 @@ describe("demo dataset", () => {
     for (const t of db.tasks) expect(wos.has(t.wo_id)).toBe(true);
     for (const p of db.woParts) if (p.part_id) expect(parts.has(p.part_id)).toBe(true);
     for (const e of db.events) expect(wos.has(e.wo_id)).toBe(true);
+    // Every record's site exists, and work orders only point at assets at their own site.
+    const sites = new Set(db.sites.map((s) => s.id));
+    for (const r of [...db.areas, ...db.assets, ...db.workOrders, ...db.inventory]) expect(sites.has(r.site_id)).toBe(true);
+    for (const w of db.workOrders) {
+      if (w.asset_id) expect(db.assets.find((a) => a.id === w.asset_id)!.site_id).toBe(w.site_id);
+    }
+    for (const a of db.siteAccess) {
+      expect(people.has(a.user_id)).toBe(true);
+      expect(sites.has(a.site_id)).toBe(true);
+    }
   });
 
   it("uses unique ids and work order numbers", () => {
-    const all = [...db.assets, ...db.workOrders, ...db.tasks, ...db.events, ...db.parts, ...db.inventory, ...db.woParts];
+    const all = [
+      ...db.sites,
+      ...db.areas,
+      ...db.profiles,
+      ...db.assets,
+      ...db.workOrders,
+      ...db.tasks,
+      ...db.events,
+      ...db.parts,
+      ...db.inventory,
+      ...db.woParts,
+      ...db.cableRoutes,
+    ];
     expect(new Set(all.map((r) => r.id)).size).toBe(all.length);
     expect(new Set(db.workOrders.map((w) => w.wo_number)).size).toBe(db.workOrders.length);
+    expect(new Set(db.assets.map((a) => a.floc)).size).toBe(db.assets.length);
+    expect(new Set(db.parts.map((p) => p.part_number)).size).toBe(db.parts.length);
   });
 
   it("never reserves more than is on hand", () => {
@@ -39,18 +63,49 @@ describe("demo dataset", () => {
     }
   });
 
-  it("covers every lifecycle stage", () => {
-    const stages = new Set(db.workOrders.filter((w) => w.status === "open").map((w) => w.stage));
-    expect(stages.size).toBe(6);
+  it("covers every lifecycle stage at every site", () => {
+    for (const site of db.sites) {
+      const stages = new Set(db.workOrders.filter((w) => w.site_id === site.id && w.status === "open").map((w) => w.stage));
+      expect(stages.size, site.code).toBe(6);
+    }
   });
 
   it("produces sensible dashboard metrics", () => {
+    const brp = db.sites.find((s) => s.code === "BRP")!.id;
     const m = computeMetrics(
-      db.workOrders.map((w) => ({ ...w, asset: null, assignee_name: null })),
-      db.inventory.map((r) => ({ ...r, part: db.parts.find((p) => p.id === r.part_id)! })),
+      db.workOrders.filter((w) => w.site_id === brp).map((w) => ({ ...w, asset: null, assignee_name: null })),
+      db.inventory.filter((r) => r.site_id === brp).map((r) => ({ ...r, part: db.parts.find((p) => p.id === r.part_id)! })),
     );
     expect(m.stageCounts.planning).toBe(4);
     expect(m.estimateRatio).toBeGreaterThan(1); // the history overran, which Planning Mode learns from
+  });
+});
+
+describe("demo timeline realism", () => {
+  const now = new Date("2026-10-16T12:00:00Z").getTime();
+  const DAY = 86_400_000;
+
+  it("closes past work in the past, after a believable duration", () => {
+    const closed = db.workOrders.filter((w) => w.status === "closed");
+    expect(closed.length).toBeGreaterThan(0);
+    for (const w of closed) {
+      const opened = Date.parse(w.created_at);
+      const done = Date.parse(w.closed_at!);
+      expect(done, w.wo_number).toBeGreaterThan(opened);
+      expect(done, w.wo_number).toBeLessThan(now);
+      expect((done - opened) / DAY, w.wo_number).toBeLessThanOrEqual(40);
+      expect(w.scheduled_date! <= w.closed_at!.slice(0, 10), w.wo_number).toBe(true);
+    }
+    // Closed history is spread over months, not stacked on one day.
+    expect(new Set(closed.map((w) => w.closed_at!.slice(0, 7))).size).toBeGreaterThan(1);
+  });
+
+  it("records every work order's stage history in order", () => {
+    for (const w of db.workOrders) {
+      const times = db.events.filter((e) => e.wo_id === w.id).map((e) => Date.parse(e.created_at));
+      expect([...times].sort((a, b) => a - b), w.wo_number).toEqual(times);
+      expect(Math.max(...times), w.wo_number).toBeLessThanOrEqual(now);
+    }
   });
 });
 

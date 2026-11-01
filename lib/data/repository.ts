@@ -2,6 +2,7 @@ import type { JobPlan } from "@/lib/planning/plan-schema";
 import type {
   AreaCode,
   Asset,
+  AssetClassWithModes,
   AssetDetail,
   InventoryItem,
   Organization,
@@ -39,6 +40,8 @@ export interface Repository {
   readonly mode: "demo" | "live";
 
   getSite(): Promise<{ site: Site; org: Organization }>;
+  /** Sites this user can switch to. */
+  listSites(): Promise<Site[]>;
   listProfiles(): Promise<Profile[]>;
   listAreas(): Promise<AreaCode[]>;
 
@@ -47,6 +50,9 @@ export interface Repository {
 
   listAssets(): Promise<Asset[]>;
   getAsset(id: string): Promise<AssetDetail | null>;
+
+  /** The organization's asset class library, each class with its failure modes. */
+  listAssetClasses(): Promise<AssetClassWithModes[]>;
 
   listInventory(): Promise<InventoryItem[]>;
 

@@ -15,6 +15,11 @@ export const jobPlanSchema = z.object({
   likely_cause: z
     .string()
     .describe("Working hypothesis for the failure, stated as a hypothesis, with the evidence it rests on."),
+  suspected_failure_mode: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Code of the asset class failure mode that best fits the symptoms (e.g. 'VIB'), or null if none fits yet."),
   requires_shutdown: z.boolean().describe("True if the asset must be out of service for the work."),
   estimated_duration_hours: z.number().describe("Elapsed clock hours from isolation to return to service."),
   permits: z
