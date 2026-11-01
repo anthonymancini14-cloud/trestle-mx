@@ -14,8 +14,9 @@ export const metadata = { title: "Planning Mode" };
 export default async function PlanningModePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { profile, repo } = await getViewer();
-  const [ctx, staticDocs] = await Promise.all([buildSiteContext(repo, id), loadStaticContext()]);
+  const ctx = await buildSiteContext(repo, id);
   if (!ctx) notFound();
+  const staticDocs = await loadStaticContext(ctx.vertical);
   const wo = ctx.workOrder;
 
   if (!canPerform("plan", profile.role, wo)) {

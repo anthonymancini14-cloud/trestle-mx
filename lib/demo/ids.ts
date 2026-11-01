@@ -17,6 +17,7 @@ const TABLE_KEYS = {
   woPart: "00b",
   assetClass: "00c",
   failureMode: "00d",
+  cableRoute: "00e",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

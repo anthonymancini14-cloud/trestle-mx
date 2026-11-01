@@ -80,7 +80,14 @@ export function PlanEditor({
             />
           </label>
           <div className="rounded-[3px] border border-line bg-panel-2 px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-tx-3">Likely cause · hypothesis</div>
+            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-tx-3">
+              Likely cause · hypothesis
+              {plan.suspected_failure_mode && (
+                <span className="rounded-[2px] border border-brass/50 px-1 font-mono normal-case tracking-normal text-brass-bright" title="Suspected failure mode code from the asset class">
+                  {plan.suspected_failure_mode}
+                </span>
+              )}
+            </div>
             <p className="mt-0.5 text-sm leading-relaxed text-tx-2">{plan.likely_cause}</p>
           </div>
         </div>

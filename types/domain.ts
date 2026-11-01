@@ -133,6 +133,7 @@ export const CLASS_CATEGORIES = [
   "Instrumentation and controls",
   "HVAC and cooling",
   "Fire protection",
+  "IT space and cabling",
 ] as const;
 export type ClassCategory = (typeof CLASS_CATEGORIES)[number];
 
@@ -227,6 +228,33 @@ export interface WoEvent {
   created_at: string;
 }
 
+/**
+ * Cable stock in the storeroom: what it is, its dimensions and how each end
+ * is terminated, so a technician can pick the exact replacement.
+ */
+export interface CableSpec {
+  kind: "cable";
+  media: "Fiber" | "Copper data" | "Power";
+  /** e.g. "OS2 single-mode trunk", "Cat6A S/FTP patch cord", "208 V 3-phase power whip". */
+  cable_type: string;
+  /** Fiber count or conductor count. */
+  count: number;
+  /** Conductor gauge for copper and power (e.g. "26 AWG"), or fiber type (e.g. "OS2 9/125"). */
+  gauge: string;
+  /** Length in meters; null for bulk reels sold by the meter. */
+  length_m: number | null;
+  outer_diameter_mm: number;
+  /** Jacket or listing, e.g. "OFNP plenum", "CMP plenum", "LSZH". */
+  jacket: string;
+  termination_a: string;
+  termination_b: string;
+  /** Fiber polarity method, e.g. "Type B". */
+  polarity?: string;
+  color?: string;
+}
+
+export type PartSpecs = CableSpec;
+
 export interface Part {
   id: string;
   org_id: string;
@@ -237,6 +265,8 @@ export interface Part {
   category: string;
   unit: string;
   unit_cost: number;
+  /** Structured specification for parts that need one (cables). */
+  specs: PartSpecs | null;
 }
 
 export interface InventoryRow {
@@ -280,7 +310,27 @@ export interface AssetDetail extends Asset {
   parent: Pick<Asset, "id" | "floc" | "name"> | null;
   children: Pick<Asset, "id" | "floc" | "name" | "status">[];
   history: WorkOrderListItem[];
+  /** For a cable: the tray sections it runs through, end A to end B. */
+  route: RouteStep[];
+  /** For a pathway: the cables routed through it. */
+  carried_cables: Pick<Asset, "id" | "floc" | "name" | "status" | "attributes">[];
 }
+
+/**
+ * One section of a cable's route: the cable runs through this pathway asset
+ * (a cable tray section) in this order, from end A to end B.
+ */
+export interface CableRouteSegment {
+  id: string;
+  cable_id: string;
+  seq: number;
+  pathway_id: string;
+  note: string | null;
+}
+
+export type RouteStep = Pick<CableRouteSegment, "seq" | "note"> & {
+  pathway: Pick<Asset, "id" | "floc" | "name" | "attributes">;
+};
 
 export interface InventoryItem extends InventoryRow {
   part: Part;

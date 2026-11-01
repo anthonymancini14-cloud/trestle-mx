@@ -125,3 +125,11 @@ export function formatAttribute(spec: AttributeSpec, value: AttributeValue | und
   if (typeof value === "number") return `${value.toLocaleString("en-US")}${spec.unit ? ` ${spec.unit}` : ""}`;
   return value;
 }
+
+/** Classes with no moving parts: they are "in service", not "running". */
+const PASSIVE_CLASSES = new Set(["CABLE", "CABLE-TRAY", "CABINET", "TANK", "VESSEL"]);
+
+export function statusLabel(status: Asset["status"], classCode: string | null | undefined): string {
+  if (status === "running" && classCode && PASSIVE_CLASSES.has(classCode)) return "In service";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}

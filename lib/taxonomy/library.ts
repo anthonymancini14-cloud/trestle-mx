@@ -610,6 +610,68 @@ export const ASSET_CLASS_LIBRARY: AssetClassDef[] = [
       fm("PDE", "Parameter deviation", "Agent quantity or supervisory air pressure below requirement.", "Agent weighing or level check; supervisory pressure monitoring."),
     ],
   },
+  // ---------------------------------------------------- IT space and cabling
+  {
+    code: "CABINET",
+    name: "Server cabinet",
+    category: "IT space and cabling",
+    verticals: DATA_CENTER,
+    description: "IT cabinets and racks, including patch and fiber distribution frames. Cable end points are recorded against them.",
+    attributes: [
+      num("rack_units", "Rack units", "U"),
+      num("design_load", "Design IT load", "kW"),
+      pick("cooling", "Cooling", ["Air", "Rear-door heat exchanger", "Direct-to-chip liquid"]),
+      pick("power_feeds", "Power feeds", ["A only", "A and B"]),
+    ],
+    failureModes: [
+      fm("OHE", "Overheating", "Inlet temperature above the allowable range: blanking panels missing, airflow blocked, cooling loss.", "Inlet temperature sensors; thermal survey."),
+      fm("STD", "Structural deficiency", "Damaged doors, rails, seismic bracing or grounding connection.", "Visual inspection."),
+      fm("AIR", "Abnormal instrument reading", "Rack power or environmental sensor reading wrong or offline.", "Sensor comparison against a reference reading."),
+    ],
+  },
+  {
+    code: "CABLE-TRAY",
+    name: "Cable tray section",
+    category: "IT space and cabling",
+    verticals: BOTH,
+    description:
+      "One labeled section of a cable pathway: wire mesh basket tray, cable ladder rack or solid-bottom tray. Installed cables record the sections they run through, so crews know which tray to work in.",
+    attributes: [
+      pick("tray_type", "Tray type", ["Wire mesh basket tray", "Cable ladder rack", "Solid-bottom tray", "Ventilated trough tray"]),
+      pick("service", "Service", ["Fiber", "Copper data", "Fiber and copper data", "Power", "Control"]),
+      num("width", "Width", "in"),
+      num("depth", "Usable depth", "in"),
+      text("location", "Location and elevation"),
+      num("design_fill", "Design fill", "%", false),
+    ],
+    failureModes: [
+      fm("STD", "Structural deficiency", "Sagging, damaged section, missing hanger or support, or a drop-out without a radius fitting.", "Pathway walkdown; inspection when cables are added or removed."),
+      fm("PDE", "Parameter deviation", "Fill above the design limit, or cable stacked too deep, risking crush and bend-radius damage.", "Fill check against the cable record; walkdown."),
+      fm("GRD", "Bonding discontinuity", "Tray sections not bonded to the grounding system.", "Bonding continuity test; visual check of bonding jumpers."),
+      fm("LBL", "Labeling missing", "Section labels missing or wrong, so crews cannot find the right tray.", "Walkdown against the pathway record."),
+    ],
+  },
+  {
+    code: "CABLE",
+    name: "Installed cable",
+    category: "IT space and cabling",
+    verticals: BOTH,
+    description:
+      "A labeled installed cable: fiber trunk, copper data cable or power whip. Records its storeroom spec, both end points and its route through cable tray sections.",
+    attributes: [
+      text("part_number", "Storeroom part number"),
+      pick("media", "Media", ["Fiber", "Copper data", "Power"]),
+      text("end_a", "End A"),
+      text("end_b", "End B"),
+      num("installed_length", "Installed length", "m"),
+    ],
+    failureModes: [
+      fm("NOO", "No output", "No light, no link or no continuity end to end.", "Link status; continuity test; light source and power meter."),
+      fm("PDE", "Parameter deviation", "Link degraded: insertion loss, reflectance or error rate above limit.", "Certification test, OTDR trace, interface error counters."),
+      fm("STD", "Structural deficiency", "Jacket damage, crush or a bend tighter than the minimum radius.", "Visual inspection along the route; OTDR event location."),
+      fm("TRM", "Termination fault", "Dirty, damaged or loose connector or lug at either end.", "Connector inspection scope; thermography on power terminations."),
+    ],
+  },
 ];
 
 export function findClassDef(code: string): AssetClassDef {

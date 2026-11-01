@@ -34,7 +34,7 @@ export async function POST(request: Request) {
 
   const wo = siteContext.workOrder;
   const events: AsyncGenerator<PlanningStreamEvent> = hasClaude()
-    ? runClaudePlanningTurn({ siteContext: formatSiteContext(siteContext), history, currentPlan })
+    ? runClaudePlanningTurn({ vertical: siteContext.vertical, siteContext: formatSiteContext(siteContext), history, currentPlan })
     : runDemoPlanningTurn({
         woNumber: wo.wo_number,
         title: wo.title,

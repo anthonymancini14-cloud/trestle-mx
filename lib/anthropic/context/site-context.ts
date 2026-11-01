@@ -4,9 +4,12 @@ import { formatAttribute } from "@/lib/taxonomy/assess";
 import type {
   Asset,
   AssetClassWithModes,
+  AssetDetail,
+  CableSpec,
   InventoryItem,
   Profile,
   WorkOrderDetail,
+  Vertical,
   WorkOrderListItem,
 } from "@/types/domain";
 
@@ -26,6 +29,11 @@ export interface SiteContext {
   inventory: InventoryItem[];
   crew: Profile[];
   siteName: string;
+  vertical: Vertical;
+  /** Cable work: the tray sections the cable runs through, end A to end B. */
+  route: AssetDetail["route"];
+  /** Tray work: the cables routed through this section. */
+  carriedCables: AssetDetail["carried_cables"];
 }
 
 export async function buildSiteContext(repo: Repository, woId: string): Promise<SiteContext | null> {
@@ -42,6 +50,7 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
 
   const asset = assets.find((a) => a.id === workOrder.asset_id) ?? null;
   const assetClass = asset ? classes.find((c) => c.id === asset.class_id) ?? null : null;
+  const detail = asset && (assetClass?.code === "CABLE" || assetClass?.code === "CABLE-TRAY") ? await repo.getAsset(asset.id) : null;
   // The asset's train: parent, children and siblings (for duty/standby pairs, same class in the same area).
   const related = asset
     ? assets.filter(
@@ -53,7 +62,10 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
       )
     : [];
 
-  const historyAssetIds = [asset, ...related].filter(Boolean).map((a) => a!.id);
+  // Cable work also learns from jobs on the tray sections it runs through, and
+  // tray work from jobs on the cables it carries.
+  const pathwayLinked = [...(detail?.route.map((s) => s.pathway.id) ?? []), ...(detail?.carried_cables.map((c) => c.id) ?? [])];
+  const historyAssetIds = [...new Set([...[asset, ...related].filter(Boolean).map((a) => a!.id), ...pathwayLinked])];
   const histories = await Promise.all(historyAssetIds.map((id) => repo.listWorkOrders({ assetId: id })));
   const history = histories
     .flat()
@@ -71,6 +83,9 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
     inventory,
     crew: profiles.filter((p) => p.role === "technician"),
     siteName: site.name,
+    vertical: site.vertical,
+    route: detail?.route ?? [],
+    carriedCables: detail?.carried_cables ?? [],
   };
 }
 
@@ -105,6 +120,31 @@ export function formatSiteContext(ctx: SiteContext): string {
     lines.push("", `## Known failure modes for the ${ctx.assetClass.name} class (code, mode, how it is detected)`);
     for (const m of ctx.assetClass.failure_modes) lines.push(`- ${m.code} ${m.name}: ${m.description} Detected by: ${m.detection}`);
   }
+  if (ctx.assetClass?.code === "CABLE" && a) {
+    lines.push("", "## Cable route, end A to end B (name these tray sections in the plan so the crew works in the right tray)");
+    lines.push(`End A: ${a.attributes.end_a ?? "not recorded"}`);
+    if (!ctx.route.length) lines.push("No tray route recorded.");
+    for (const step of ctx.route) {
+      const t = step.pathway.attributes;
+      lines.push(
+        `- ${step.pathway.floc} ${step.pathway.name}: ${t.tray_type ?? "tray"}, ${t.width ?? "?"} x ${t.depth ?? "?"} in, ${t.service ?? "?"} service, ${t.location ?? "location not recorded"}.${step.note ? ` Route note: ${step.note}.` : ""}`,
+      );
+    }
+    lines.push(`End B: ${a.attributes.end_b ?? "not recorded"}`);
+    const pn = typeof a.attributes.part_number === "string" ? a.attributes.part_number : null;
+    const stock = pn ? ctx.inventory.find((i) => i.part.part_number === pn) : undefined;
+    lines.push("", "## Replacement cable from the storeroom");
+    if (!stock) lines.push(pn ? `${pn} is the recorded spec but it is not stocked at this site.` : "No storeroom part recorded for this cable.");
+    else {
+      lines.push(`${stock.part.part_number} | ${stock.part.description} | available ${stock.on_hand - stock.reserved} ${stock.part.unit} | bin ${stock.bin}`);
+      if (stock.part.specs?.kind === "cable") lines.push(`Spec: ${formatCableSpec(stock.part.specs)}`);
+    }
+  }
+  if (ctx.assetClass?.code === "CABLE-TRAY") {
+    lines.push("", "## Cables routed through this tray section");
+    if (!ctx.carriedCables.length) lines.push("None recorded.");
+    for (const c of ctx.carriedCables) lines.push(`- ${c.floc} ${c.name} (${c.attributes.media ?? "?"})`);
+  }
   if (ctx.related.length) {
     lines.push("", "## Related equipment (same train or duty/standby set)");
     for (const r of ctx.related) lines.push(`- ${r.floc} ${r.name} (${(r.class_id && ctx.classNames.get(r.class_id)) ?? "unclassified"}, ${r.status})`);
@@ -120,9 +160,8 @@ export function formatSiteContext(ctx: SiteContext): string {
 
   lines.push("", "## Storeroom catalog with available stock (on hand minus reserved)");
   for (const i of ctx.inventory) {
-    lines.push(
-      `- ${i.part.part_number} | ${i.part.description} | available ${i.on_hand - i.reserved} ${i.part.unit} | bin ${i.bin}`,
-    );
+    const spec = i.part.specs?.kind === "cable" ? ` | ${formatCableSpec(i.part.specs)}` : "";
+    lines.push(`- ${i.part.part_number} | ${i.part.description} | available ${i.on_hand - i.reserved} ${i.part.unit} | bin ${i.bin}${spec}`);
   }
 
   lines.push("", "## Crafts available");
@@ -131,4 +170,19 @@ export function formatSiteContext(ctx: SiteContext): string {
   lines.push([...byCraft].map(([craft, n]) => `${craft}: ${n}`).join(", ") + ". Operations support available for isolations.");
 
   return lines.join("\n");
+}
+
+function formatCableSpec(s: CableSpec): string {
+  return [
+    s.cable_type,
+    `${s.count} ${s.media === "Fiber" ? "fibers" : "conductors"}, ${s.gauge}`,
+    s.length_m === null ? "bulk" : `${s.length_m} m`,
+    `OD ${s.outer_diameter_mm} mm`,
+    s.jacket,
+    `end A ${s.termination_a}`,
+    `end B ${s.termination_b}`,
+    s.polarity ? `polarity ${s.polarity}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
 }

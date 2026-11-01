@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
+import { CableRoutePanel, CableSpecPanel, CarriedCablesPanel } from "@/components/assets/cable-panels";
 import { DataQualityBadge } from "@/components/assets/data-quality";
 import { CriticalityBadge, PriorityBadge, StageBadge } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Badge, EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
-import { assessAsset, formatAttribute } from "@/lib/taxonomy/assess";
+import { assessAsset, formatAttribute, statusLabel } from "@/lib/taxonomy/assess";
 import { formatDate, formatHours } from "@/lib/utils";
 
 export default async function AssetPage({ params }: { params: Promise<{ id: string }> }) {
@@ -16,6 +17,10 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
   if (!asset) notFound();
 
   const cls = asset.asset_class;
+  const isCable = cls?.code === "CABLE";
+  const isTray = cls?.code === "CABLE-TRAY";
+  const partNumber = typeof asset.attributes.part_number === "string" ? asset.attributes.part_number : null;
+  const cableStock = isCable && partNumber ? (await repo.listInventory()).find((i) => i.part.part_number === partNumber) : undefined;
   const assessment = assessAsset(asset, cls);
   const issueByKey = new Map(assessment.issues.map((i) => [i.spec.key, i]));
 
@@ -37,7 +42,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
           <h1 className="font-display text-3xl font-semibold tracking-wide">{asset.name}</h1>
           <div className="mt-1 flex flex-wrap gap-2">
             <CriticalityBadge criticality={asset.criticality} />
-            <Badge className="border-line-strong capitalize text-tx-2">{asset.status}</Badge>
+            <Badge className="border-line-strong text-tx-2">{statusLabel(asset.status, cls?.code)}</Badge>
             <DataQualityBadge assessment={assessment} />
           </div>
         </div>
@@ -119,6 +124,13 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
         </div>
 
         <div className="space-y-4">
+          {isCable && (
+            <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+              <CableRoutePanel attributes={asset.attributes} route={asset.route} eyebrow="Pathway" />
+              <CableSpecPanel partNumber={partNumber} item={cableStock} />
+            </div>
+          )}
+          {isTray && <CarriedCablesPanel cables={asset.carried_cables} />}
           <Panel>
             <PanelHeader eyebrow="Work history" title="Work orders" actions={<span className="font-mono text-xs text-tx-3">{asset.history.length}</span>} />
             {asset.history.length === 0 ? (

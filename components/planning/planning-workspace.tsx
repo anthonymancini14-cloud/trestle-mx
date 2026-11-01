@@ -199,7 +199,7 @@ export function PlanningWorkspace({ workOrder, context, catalog, assistant, sugg
         ))}
       </div>
 
-      <div className="grid gap-3 lg:h-[calc(100dvh-13.5rem)] lg:min-h-[560px] lg:grid-cols-[minmax(340px,5fr)_7fr]">
+      <div className="grid gap-3 lg:h-[calc(100dvh-13.5rem)] lg:min-h-[560px] lg:grid-cols-[minmax(340px,5fr)_minmax(0,7fr)]">
         {/* Conversation */}
         <section
           className={cn(

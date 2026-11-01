@@ -2,15 +2,17 @@ import Link from "next/link";
 import { TrestleMark, Wordmark } from "@/components/brand";
 import { NavLinks } from "@/components/shell/nav-links";
 import { RoleSwitcher } from "@/components/shell/role-switcher";
+import { SiteSwitcher } from "@/components/shell/site-switcher";
 import { Badge } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { hasClaude } from "@/lib/config";
-import { ROLE_LABELS } from "@/types/domain";
+import { ROLE_LABELS, VERTICAL_LABELS } from "@/types/domain";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const { profile, repo } = await getViewer();
-  const [{ site }, planningQueue, profiles] = await Promise.all([
+  const [{ site }, sites, planningQueue, profiles] = await Promise.all([
     repo.getSite(),
+    repo.listSites(),
     repo.listWorkOrders({ stage: "planning", status: "open" }),
     repo.mode === "demo" ? repo.listProfiles() : Promise.resolve([]),
   ]);
@@ -26,6 +28,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="mt-auto border-t border-line px-4 py-3 text-[11px] leading-relaxed text-tx-3">
           <div className="font-mono text-tx-2">{site.code}</div>
           {site.name}
+          <div>{VERTICAL_LABELS[site.vertical]}</div>
         </div>
       </aside>
 
@@ -35,14 +38,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <Link href="/dashboard" className="md:hidden">
               <Wordmark className="text-lg" />
             </Link>
-            <div className="hidden items-center gap-2 text-xs text-tx-3 md:flex">
-              <span className="font-mono text-tx-2">{site.code}</span>
-              <span>{site.name}</span>
+            <div className="hidden md:block">
+              <SiteSwitcher current={site} sites={sites} />
             </div>
             <div className="ml-auto flex items-center gap-2">
               {repo.mode === "demo" ? (
-                <Badge className="hidden border-brass-dim text-brass sm:inline-flex" title="In-memory fictional plant">
-                  Demo plant
+                <Badge className="hidden border-brass-dim text-brass sm:inline-flex" title="In-memory fictional sites">
+                  Demo
                 </Badge>
               ) : (
                 <Badge className="hidden border-good/40 text-good sm:inline-flex">Live</Badge>
@@ -67,6 +69,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </div>
           </div>
           <div className="border-t border-line md:hidden">
+            {sites.length > 1 && (
+              <div className="px-3 pt-2">
+                <SiteSwitcher current={site} sites={sites} />
+              </div>
+            )}
             <NavLinks planningCount={planningQueue.length} orientation="horizontal" />
           </div>
         </header>

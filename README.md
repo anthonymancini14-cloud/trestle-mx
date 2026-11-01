@@ -6,7 +6,7 @@ Most CMMS products treat the work order as a form. Trestle.MX treats it as a pro
 
 ![Planning Mode: the assistant revises the job plan after the planner asks about a weeping seal](docs/screenshots/planning-mode.png)
 
-> The demo runs on a fictional plant (Basalt Ridge Plant, Northfork Utility District). Every person, asset and record is invented.
+> The demo runs on two fictional sites of one fictional operator, Northfork Infrastructure: **Cedar Flats Data Center** (the default) and **Basalt Ridge Plant**, a water and utility plant. Every person, asset and record is invented.
 
 ---
 
@@ -30,8 +30,11 @@ The planner stays the decision-maker. The assistant states the failure cause as 
 ```
 Layer 1  lib/anthropic/context/layer1/                     universal: energy control, electrical safety,
                                                            permits, planning practice, rotating equipment
-Layer 2  lib/anthropic/context/layer2-industrial-utility/  vertical: redundancy, compliance analyzers,
-                                                           chemical feed, steam, cooling towers, standby power
+Layer 2  lib/anthropic/context/layer2-<vertical>/          chosen by the site's vertical:
+           layer2-industrial-utility/                      redundancy, compliance analyzers, chemical feed,
+                                                           steam, cooling towers, standby power
+           layer2-data-center/                             2N and N+1 redundancy, MOPs and change windows,
+                                                           liquid cooling, cable plant practice
 Layer 3  built per request from the database               the asset and its train, closed work and debriefs,
                                                            storeroom stock, available crafts
 ```
@@ -81,6 +84,27 @@ The register shows **data quality against the standard**: share of assets classi
 
 ---
 
+## Cable plant
+
+At the data center, the cable plant is part of the asset register, so a cable job tells the crew exactly where to work.
+
+| Record | What it holds |
+|---|---|
+| **Cable tray section** (class `CABLE-TRAY`) | One labeled section of a pathway: wire mesh basket tray, cable ladder rack or solid-bottom tray; service (fiber, copper, power), width, depth, location and elevation, design fill |
+| **Installed cable** (class `CABLE`) | Its label, both end points (frame, panel, port), installed length and the storeroom part it is made from |
+| **Cable route** (`cable_routes`) | The tray sections the cable runs through, end A to end B, in order |
+| **Storeroom cable spec** | Cable type, fiber or conductor count and gauge, length, outer diameter, jacket, both terminations and polarity |
+
+A work order on a cable shows the route, so the technician knows which tray sections to open and work within; a tray section lists the cables it carries. Planning Mode gets the route, end points and replacement spec, names the trays in the plan, and works bend radius limits out from the cable's outer diameter. The database refuses a route through anything but a tray section at the cable's own site.
+
+---
+
+## Sites and verticals
+
+Each site has a vertical (industrial/utility or data center). The core is the same everywhere: lifecycle, roles, Planning Mode, the class library and per-site security. The vertical picks Planning Mode's Layer 2 guidance pack and which classes apply. The top bar switches between the sites a user can access (in the demo, both sites).
+
+---
+
 ## The work order lifecycle
 
 | Stage | Who | What happens |
@@ -114,16 +138,16 @@ Role and stage rules live in one pure module (`lib/workflow.ts`) used by both th
 
 Everything goes through a `Repository` interface (`lib/data/repository.ts`) with two implementations:
 
-- **Demo** (`DemoRepository`): an in-memory fictional plant. No setup; a role switcher in the top bar lets a visitor act as any of the nine people at the plant.
+- **Demo** (`DemoRepository`): two in-memory fictional sites. No setup; the top bar switches site and lets a visitor act as anyone who works there. The demo store applies the same per-site scoping the database enforces.
 - **Live** (`SupabaseRepository`): multi-tenant Postgres. Every query runs under the signed-in user's JWT, so RLS scopes all data. Atomic multi-row writes go through Postgres functions.
 
 The app runs in live mode when Supabase environment variables are present, and in demo mode otherwise.
 
 ### Data model
 
-Fourteen tables, created in dependency order by the migrations in `supabase/migrations/`:
+Fifteen tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes` · `assets` (FLOC hierarchy, class and attributes) · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide) → `inventory` (per site)
+`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections) · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -159,7 +183,7 @@ supabase link --project-ref <ref>
 supabase db push                         # applies the migrations
 SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SEED_PASSWORD=... pnpm seed:live
 # set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in .env.local
-# sign in as marcus@demo.trestle.mx (planner)
+# sign in as owen@demo.trestle.mx (data center planner) or marcus@demo.trestle.mx (plant planner)
 ```
 
 Checks:
@@ -175,7 +199,7 @@ app/
   page.tsx                  demo entry: pick a role
   (app)/dashboard           KPIs, lifecycle pipeline, "waiting on you"
   (app)/planning            Planning queue and Planning Mode
-  (app)/work-orders         list, detail with stage actions, new
+  (app)/work-orders         list, detail with stage actions, new (searchable asset picker)
   (app)/assets              FLOC registry, data quality, asset history
   (app)/asset-classes       class library: data standard and failure modes per class
   (app)/inventory           storeroom
@@ -188,9 +212,10 @@ lib/
   anthropic/                Claude planner, prompt, context loader, site context (layer 3)
   planning/                 plan schema, stream protocol, scripted demo planner
   taxonomy/                 asset class library and data-quality checks
-  demo/                     fictional plant seed data
+  assets/                   asset search for pickers
+  demo/                     fictional sites: data center and utility plant
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, cable plant, sites
 ```
 
 ## Design decisions
@@ -208,7 +233,8 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 - PM strategy: PM tasks linked to the failure modes they address, frequency by criticality, deferral rules, critical spares per class
 - Troubleshooting record: operator actions, findings and proven cause, coded against the class failure modes
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
-- Data center sites: Layer 2 standards pack, redundancy model (N, N+1, 2N, A/B paths), MOP fields in the plan, vendor scope
+- Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
+- Tray fill tracking from cable outer diameters against each section's design fill
 - Weekly schedule builder with crew capacity
 - Retrieval over OEM manuals as a fourth context layer
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner

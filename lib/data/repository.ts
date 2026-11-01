@@ -40,6 +40,8 @@ export interface Repository {
   readonly mode: "demo" | "live";
 
   getSite(): Promise<{ site: Site; org: Organization }>;
+  /** Sites this user can switch to. */
+  listSites(): Promise<Site[]>;
   listProfiles(): Promise<Profile[]>;
   listAreas(): Promise<AreaCode[]>;
 

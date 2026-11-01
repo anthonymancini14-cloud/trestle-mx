@@ -4,10 +4,10 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { DEMO_USER_COOKIE, getViewer } from "@/lib/auth/viewer";
+import { DEMO_SITE_COOKIE, DEMO_USER_COOKIE, SITE_COOKIE, demoProfileFor, getViewer } from "@/lib/auth/viewer";
 import { isLiveMode } from "@/lib/config";
 import { resetDemoStore } from "@/lib/data/demo-repository";
-import { PROFILES } from "@/lib/demo/seed";
+import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
 import { assertCan, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
 import type { WorkOrderDetail } from "@/types/domain";
@@ -127,12 +127,33 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
   redirect(`/work-orders/${id}`);
 }
 
+// ---------------------------------------------------------------- site switching
+
+const COOKIE_OPTS = { path: "/", sameSite: "lax" as const, maxAge: 60 * 60 * 24 * 30 };
+
+/** Switch the site the app is showing. Live mode: RLS still limits the user to their own sites. */
+export async function switchSite(siteId: string) {
+  const jar = await cookies();
+  if (isLiveMode()) {
+    const { repo } = await getViewer();
+    if (!(await repo.listSites()).some((s) => s.id === siteId)) return;
+    jar.set(SITE_COOKIE, siteId, COOKIE_OPTS);
+  } else {
+    if (!DEMO_SITES.some((s) => s.id === siteId)) return;
+    jar.set(DEMO_SITE_COOKIE, siteId, COOKIE_OPTS);
+    // Keep the current person if they work at the new site; otherwise become its planner.
+    jar.set(DEMO_USER_COOKIE, demoProfileFor(siteId, jar.get(DEMO_USER_COOKIE)?.value).id, COOKIE_OPTS);
+  }
+  revalidatePath("/", "layout");
+  redirect("/dashboard");
+}
+
 // ---------------------------------------------------------------- demo only
 
 export async function switchDemoUser(profileId: string) {
   if (isLiveMode()) return;
-  if (!PROFILES.some((p) => p.id === profileId)) return;
-  (await cookies()).set(DEMO_USER_COOKIE, profileId, { path: "/", sameSite: "lax", maxAge: 60 * 60 * 24 * 30 });
+  if (!ALL_PROFILES.some((p) => p.id === profileId)) return;
+  (await cookies()).set(DEMO_USER_COOKIE, profileId, COOKIE_OPTS);
   revalidatePath("/", "layout");
 }
 
@@ -142,7 +163,15 @@ export async function resetDemo() {
   revalidatePath("/", "layout");
 }
 
-export async function enterDemo(profileId: string) {
-  await switchDemoUser(profileId);
+/** Landing page: enter a demo site as the person who holds a role there. */
+export async function enterDemo(formData: FormData) {
+  if (isLiveMode()) redirect("/dashboard");
+  const siteId = String(formData.get("site") ?? "");
+  const role = String(formData.get("role") ?? "planner");
+  if (!DEMO_SITES.some((s) => s.id === siteId)) return;
+  const jar = await cookies();
+  jar.set(DEMO_SITE_COOKIE, siteId, COOKIE_OPTS);
+  const person = ALL_PROFILES.find((p) => p.role === role && demoProfileFor(siteId, p.id).id === p.id);
+  jar.set(DEMO_USER_COOKIE, (person ?? demoProfileFor(siteId, undefined)).id, COOKIE_OPTS);
   redirect("/dashboard");
 }

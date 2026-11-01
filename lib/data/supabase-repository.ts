@@ -42,7 +42,9 @@ function toListItem(row: WoRow): WorkOrderListItem {
   return { ...rest, assignee_name: assignee?.full_name ?? null };
 }
 
-function unwrap<T>(result: { data: T | null; error: { message: string } | null }): T {
+type Result<T> = { data: T | null; error: { message: string } | null };
+
+function unwrap<T>(result: Result<T>): T {
   if (result.error) throw new Error(result.error.message);
   if (result.data === null) throw new Error("No data returned");
   return result.data;
@@ -60,6 +62,11 @@ export class SupabaseRepository implements Repository {
     const site = unwrap<Site>(await this.db.from("sites").select("*").eq("id", this.siteId).single());
     const org = unwrap<Organization>(await this.db.from("organizations").select("*").eq("id", site.org_id).single());
     return { site, org };
+  }
+
+  async listSites() {
+    // RLS limits sites to the ones in this user's site_access rows.
+    return unwrap<Site[]>(await this.db.from("sites").select("*").order("name"));
   }
 
   async listProfiles() {
@@ -120,7 +127,7 @@ export class SupabaseRepository implements Repository {
     if (error) throw new Error(error.message);
     if (!data) return null;
     const asset = data as Asset & { area: AreaCode };
-    const [parent, children, history, assetClass] = await Promise.all([
+    const [parent, children, history, assetClass, route, carried] = await Promise.all([
       asset.parent_id
         ? this.db.from("assets").select("id, floc, name").eq("id", asset.parent_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
@@ -129,10 +136,26 @@ export class SupabaseRepository implements Repository {
       asset.class_id
         ? this.db.from("asset_classes").select("*, failure_modes:asset_class_failure_modes(*)").eq("id", asset.class_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
+      this.db
+        .from("cable_routes")
+        .select("seq, note, pathway:assets!cable_routes_pathway_id_fkey(id, floc, name, attributes)")
+        .eq("cable_id", id)
+        .order("seq"),
+      this.db
+        .from("cable_routes")
+        .select("cable:assets!cable_routes_cable_id_fkey(id, floc, name, status, attributes)")
+        .eq("pathway_id", id),
     ]);
     return {
       ...asset,
       asset_class: assetClass.data ? sortModes(assetClass.data as AssetClassWithModes) : null,
+      // Without generated types, supabase-js types to-one embeds as arrays; they are objects at runtime.
+      route: unwrap<AssetDetail["route"]>(route as unknown as Result<AssetDetail["route"]>),
+      carried_cables: unwrap<{ cable: AssetDetail["carried_cables"][number] }[]>(
+        carried as unknown as Result<{ cable: AssetDetail["carried_cables"][number] }[]>,
+      )
+        .map((r) => r.cable)
+        .sort((a, b) => a.floc.localeCompare(b.floc)),
       parent: (parent.data as AssetDetail["parent"]) ?? null,
       children: unwrap<AssetDetail["children"]>(children),
       history,

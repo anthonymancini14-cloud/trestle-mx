@@ -1,15 +1,17 @@
 "use client";
 
 import { useActionState } from "react";
+import { AssetPicker } from "@/components/assets/asset-picker";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select, Textarea } from "@/components/ui/primitives";
 import { createWorkOrder } from "@/lib/actions";
+import type { AssetOption } from "@/lib/assets/search";
 
 export function NewWorkOrderForm({
   assets,
   defaultAssetId,
 }: {
-  assets: { id: string; label: string }[];
+  assets: AssetOption[];
   defaultAssetId?: string;
 }) {
   const [state, action, pending] = useActionState(createWorkOrder, null);
@@ -22,14 +24,7 @@ export function NewWorkOrderForm({
       </div>
       <div>
         <Label htmlFor="asset_id">Equipment</Label>
-        <Select id="asset_id" name="asset_id" defaultValue={defaultAssetId ?? ""}>
-          <option value="">Not sure / no tag</option>
-          {assets.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.label}
-            </option>
-          ))}
-        </Select>
+        <AssetPicker inputId="asset_id" name="asset_id" options={assets} defaultId={defaultAssetId} />
       </div>
       <div>
         <Label htmlFor="description">What did you see, hear or measure?</Label>

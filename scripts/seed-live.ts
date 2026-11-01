@@ -1,5 +1,6 @@
 /**
- * Load the fictional Basalt Ridge Plant into a Supabase project.
+ * Load the fictional demo sites (Cedar Flats Data Center and Basalt Ridge
+ * Plant) into a Supabase project.
  *
  *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SEED_PASSWORD=... pnpm seed:live
  *
@@ -53,9 +54,9 @@ async function main() {
   }
   const mapPerson = (id: string | null) => (id ? idMap.get(id) ?? null : null);
 
-  console.log("Loading plant data");
+  console.log("Loading site data");
   await insert("organizations", [db.org]);
-  await insert("sites", [db.site]);
+  await insert("sites", db.sites);
   await insert("area_codes", db.areas);
   await insert(
     "profiles",
@@ -63,13 +64,14 @@ async function main() {
   );
   await insert(
     "site_access",
-    db.profiles.map((p) => ({ user_id: mapPerson(p.id), site_id: db.site.id })),
+    db.siteAccess.map((a) => ({ user_id: mapPerson(a.user_id), site_id: a.site_id })),
   );
   await insert("asset_classes", db.assetClasses);
   await insert("asset_class_failure_modes", db.failureModes);
   // Parents first so the self-reference resolves.
   await insert("assets", db.assets.map((a) => ({ ...a, parent_id: null })));
   await insert("assets", db.assets.filter((a) => a.parent_id));
+  await insert("cable_routes", db.cableRoutes);
   await insert("parts_catalog", db.parts);
   await insert("inventory", db.inventory);
   await insert(
@@ -84,7 +86,7 @@ async function main() {
   await insert("wo_tasks", db.tasks);
   await insert("wo_parts", db.woParts);
   await insert("wo_events", db.events.map((e) => ({ ...e, actor_id: mapPerson(e.actor_id) })));
-  console.log("Done. Sign in as marcus@demo.trestle.mx (planner).");
+  console.log("Done. Sign in as owen@demo.trestle.mx (data center planner) or marcus@demo.trestle.mx (plant planner).");
 }
 
 main().catch((err) => {

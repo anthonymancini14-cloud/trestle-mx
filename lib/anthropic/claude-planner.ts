@@ -5,6 +5,7 @@ import { PLANNING_MODEL } from "@/lib/config";
 import { jobPlanSchema, type JobPlan, type PlanningMessage, type PlanningStreamEvent } from "@/lib/planning/plan-schema";
 import { formatStaticContext, loadStaticContext } from "./context/loader";
 import { KICKOFF_MESSAGE, PLANNING_SYSTEM_PROMPT, planContextMessage } from "./planning-prompt";
+import type { Vertical } from "@/types/domain";
 
 // The JSON Schema draft marker is not part of the tool input schema.
 const { $schema: _draft, ...planJsonSchema } = z.toJSONSchema(jobPlanSchema);
@@ -24,12 +25,13 @@ const UPDATE_PLAN_TOOL: Anthropic.Tool = {
  * a cached system block, so repeat turns on any work order reuse the cache.
  */
 export async function* runClaudePlanningTurn(input: {
+  vertical: Vertical;
   siteContext: string;
   history: PlanningMessage[];
   currentPlan: JobPlan | null;
 }): AsyncGenerator<PlanningStreamEvent> {
   const client = new Anthropic();
-  const staticContext = formatStaticContext(await loadStaticContext());
+  const staticContext = formatStaticContext(await loadStaticContext(input.vertical));
 
   const history = input.history.length ? input.history : [{ role: "user" as const, content: KICKOFF_MESSAGE }];
   const [first, ...rest] = history;

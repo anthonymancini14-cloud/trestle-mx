@@ -3,7 +3,7 @@ import { DataQualityBadge, QualityStat, qualityTone } from "@/components/assets/
 import { CriticalityBadge } from "@/components/status";
 import { Badge, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
-import { assessAsset, assessRegister, type AssetAssessment } from "@/lib/taxonomy/assess";
+import { assessAsset, assessRegister, statusLabel, type AssetAssessment } from "@/lib/taxonomy/assess";
 import { cn } from "@/lib/utils";
 import type { Asset } from "@/types/domain";
 
@@ -21,6 +21,7 @@ export default async function AssetsPage() {
   const quality = assessRegister(assets, classes);
   const assessments = new Map(assets.map((a) => [a.id, assessAsset(a, a.class_id ? classById.get(a.class_id) ?? null : null)]));
   const classNames = new Map(classes.map((c) => [c.id, c.name]));
+  const classCodes = new Map(classes.map((c) => [c.id, c.code]));
   const openByAsset = new Map<string, number>();
   for (const w of workOrders) if (w.asset_id) openByAsset.set(w.asset_id, (openByAsset.get(w.asset_id) ?? 0) + 1);
 
@@ -55,7 +56,7 @@ export default async function AssetsPage() {
               <PanelHeader eyebrow={<span className="font-mono">{area.code}</span>} title={area.name} actions={<span className="font-mono text-xs text-tx-3">{inArea.length}</span>} />
               <ul className="divide-y divide-line/60">
                 {roots.map((a) => (
-                  <AssetRow key={a.id} asset={a} all={inArea} depth={0} openByAsset={openByAsset} assessments={assessments} classNames={classNames} />
+                  <AssetRow key={a.id} asset={a} all={inArea} depth={0} openByAsset={openByAsset} assessments={assessments} classNames={classNames} classCodes={classCodes} />
                 ))}
               </ul>
             </Panel>
@@ -73,9 +74,10 @@ interface RowProps {
   openByAsset: Map<string, number>;
   assessments: Map<string, AssetAssessment>;
   classNames: Map<string, string>;
+  classCodes: Map<string, string>;
 }
 
-function AssetRow({ asset, all, depth, openByAsset, assessments, classNames }: RowProps) {
+function AssetRow({ asset, all, depth, openByAsset, assessments, classNames, classCodes }: RowProps) {
   const assessment = assessments.get(asset.id)!;
   const children = all.filter((a) => a.parent_id === asset.id);
   const open = openByAsset.get(asset.id) ?? 0;
@@ -91,14 +93,14 @@ function AssetRow({ asset, all, depth, openByAsset, assessments, classNames }: R
           </div>
           {!assessment.complete && <DataQualityBadge assessment={assessment} />}
           {open > 0 && <Badge className="border-brass/40 text-brass-bright">{open} open</Badge>}
-          <Badge className={cn("capitalize", asset.status === "running" ? "border-good/40 text-good" : asset.status === "down" ? "border-bad/50 text-bad" : "border-line-strong text-tx-3")}>
-            {asset.status}
+          <Badge className={cn(asset.status === "running" ? "border-good/40 text-good" : asset.status === "down" ? "border-bad/50 text-bad" : "border-line-strong text-tx-3")}>
+            {statusLabel(asset.status, asset.class_id ? classCodes.get(asset.class_id) : null)}
           </Badge>
           <CriticalityBadge criticality={asset.criticality} />
         </Link>
       </li>
       {children.map((c) => (
-        <AssetRow key={c.id} asset={c} all={all} depth={depth + 1} openByAsset={openByAsset} assessments={assessments} classNames={classNames} />
+        <AssetRow key={c.id} asset={c} all={all} depth={depth + 1} openByAsset={openByAsset} assessments={assessments} classNames={classNames} classCodes={classCodes} />
       ))}
     </>
   );

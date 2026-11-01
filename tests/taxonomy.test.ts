@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { buildSiteContext, formatSiteContext } from "@/lib/anthropic/context/site-context";
 import { DemoRepository, resetDemoStore } from "@/lib/data/demo-repository";
 import { buildDataset } from "@/lib/demo/dataset";
+import { SITE } from "@/lib/demo/seed";
 import { assessAsset, assessRegister } from "@/lib/taxonomy/assess";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import { CLASS_CATEGORIES, VERTICALS, type AssetClass } from "@/types/domain";
@@ -54,7 +55,8 @@ describe("demo register against the library", () => {
     for (const a of db.assets) {
       const cls = a.class_id ? classById.get(a.class_id) : undefined;
       expect(cls, a.floc).toBeTruthy();
-      expect(cls!.verticals, a.floc).toContain(db.site.vertical);
+      const site = db.sites.find((s) => s.id === a.site_id)!;
+      expect(cls!.verticals, a.floc).toContain(site.vertical);
     }
   });
 
@@ -68,11 +70,18 @@ describe("demo register against the library", () => {
 
   it("leaves the intended data gaps for the demo", () => {
     const incomplete = db.assets.filter((a) => !assessAsset(a, classById.get(a.class_id!)!).complete).map((a) => a.floc);
-    expect(incomplete.sort()).toEqual(["BRP-BLR-DA-503", "BRP-CTW-F-601", "BRP-INT-P-101B", "BRP-INT-SCR-101"]);
-    const q = assessRegister(db.assets, db.assetClasses);
-    expect(q.classified).toBe(24);
-    expect(q.complete).toBe(20);
-    expect(q.completePct).toBe(83);
+    expect(incomplete.sort()).toEqual([
+      "BRP-BLR-DA-503",
+      "BRP-CTW-F-601",
+      "BRP-INT-P-101B",
+      "BRP-INT-SCR-101",
+      "CFD-DH1-CBL-0201",
+      "CFD-DH1-CRAH-04",
+    ]);
+    const brp = assessRegister(db.assets.filter((a) => a.site_id === SITE.id), db.assetClasses);
+    expect(brp.classified).toBe(24);
+    expect(brp.complete).toBe(20);
+    expect(brp.completePct).toBe(83);
   });
 });
 
@@ -120,7 +129,7 @@ describe("Planning Mode context", () => {
   beforeEach(() => resetDemoStore());
 
   it("gives Claude the asset's class, nameplate and failure modes", async () => {
-    const repo = new DemoRepository();
+    const repo = new DemoRepository(SITE.id);
     const wo = db.workOrders.find((w) => w.wo_number === "WO-26-1031")!;
     const ctx = await buildSiteContext(repo, wo.id);
     const text = formatSiteContext(ctx!);
