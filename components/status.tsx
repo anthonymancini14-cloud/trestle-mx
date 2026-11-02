@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import type { Criticality, Priority, WoPartStatus, WoStage, WoStatus, WoType } from "@/types/domain";
+import type { Criticality, DocStatus, Priority, RevisionStatus, WoPartStatus, WoStage, WoStatus, WoType } from "@/types/domain";
 import { STAGE_LABELS } from "@/types/domain";
 
 const STAGE_STYLES: Record<WoStage, string> = {
@@ -65,4 +65,19 @@ export function StockBadge({ available, min }: { available: number; min: number 
   if (available <= 0) return <Badge className="border-bad/50 bg-bad/10 text-bad">Out</Badge>;
   if (available < min) return <Badge className="border-warn/50 bg-warn/10 text-warn">Low · {available}</Badge>;
   return <Badge className="border-good/40 text-good">{available} avail</Badge>;
+}
+
+const REVISION: Record<RevisionStatus, { label: string; cls: string }> = {
+  current: { label: "Current", cls: "border-good/40 bg-good/10 text-good" },
+  draft: { label: "Draft, not approved", cls: "border-info/40 bg-info/10 text-info" },
+  superseded: { label: "Superseded", cls: "border-warn/50 bg-warn/10 text-warn" },
+  rejected: { label: "Rejected", cls: "border-line bg-transparent text-tx-3" },
+};
+
+export function RevisionBadge({ status }: { status: RevisionStatus }) {
+  return <Badge className={REVISION[status].cls}>{REVISION[status].label}</Badge>;
+}
+
+export function DocStatusBadge({ status }: { status: DocStatus }) {
+  return status === "obsolete" ? <Badge className="border-bad/40 bg-bad/10 text-bad">Obsolete</Badge> : <Badge className="border-good/40 text-good">Active</Badge>;
 }

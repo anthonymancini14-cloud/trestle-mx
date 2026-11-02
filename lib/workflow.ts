@@ -174,3 +174,42 @@ export function canRecord(
       return wo.status === "closed" && (allowed || (role === "technician" && !!profileId && wo.assigned_to === profileId));
   }
 }
+
+// ---------------------------------------------------------------- Document control
+
+/**
+ * Who controls documents (TMX-026). Everyone at the site can read every
+ * document. A revision is written by one person and approved by another.
+ */
+export const DOC_RULES = {
+  /** Create a document, write a new revision, link it to assets. */
+  author: ["planner", "supervisor", "admin"],
+  /** Approve or reject a draft revision (never your own). */
+  review: ["supervisor", "admin"],
+  /** Archive a document as obsolete and name its replacement. */
+  obsolete: ["supervisor", "admin"],
+  /** Put a document on an open work order. */
+  attach: ["planner", "supervisor", "admin", "technician"],
+  /** Take one off again, if nobody has opened it from the work order. */
+  detach: ["planner", "supervisor", "admin"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export type DocAction = keyof typeof DOC_RULES;
+
+export function canDoc(action: DocAction, role: Role): boolean {
+  return (DOC_RULES[action] as readonly Role[]).includes(role);
+}
+
+/** Approve or reject a draft: a reviewer who didn't write it, on an active document. */
+export function canReview(role: Role, profileId: string, rev: { status: string; prepared_by: string | null }, doc: { status: string }): boolean {
+  return canDoc("review", role) && rev.status === "draft" && rev.prepared_by !== profileId && doc.status === "active";
+}
+
+export function canAttachDocument(role: Role, wo: Pick<WorkOrder, "status">): boolean {
+  return wo.status === "open" && canDoc("attach", role);
+}
+
+/** A document opened from the work order was used, so it stays. */
+export function canDetachDocument(role: Role, wo: Pick<WorkOrder, "status">, viewCount: number): boolean {
+  return wo.status === "open" && viewCount === 0 && canDoc("detach", role);
+}

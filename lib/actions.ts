@@ -11,8 +11,10 @@ import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
-import { FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
+import { assertCan, canAttachDocument, canDetachDocument, canDoc, canReview, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
+import { DOC_TYPES, FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
+import { fileProblems, revisionProblems } from "@/lib/documents";
+import type { NewRevisionInput, UploadTarget } from "@/lib/data/repository";
 
 export type ActionResult = { ok: true } | { ok: false, error: string };
 
@@ -474,4 +476,182 @@ export async function enterDemo(formData: FormData) {
   const person = ALL_PROFILES.find((p) => p.role === role && demoProfileFor(siteId, p.id).id === p.id);
   jar.set(DEMO_USER_COOKIE, (person ?? demoProfileFor(siteId, undefined)).id, COOKIE_OPTS);
   redirect("/dashboard");
+}
+
+// ---------------------------------------------------------------- Document control (TMX-026)
+
+/** Run a document change as the viewer, after a role check; refresh the views. */
+async function withDocs(
+  check: (ctx: Awaited<ReturnType<typeof getViewer>>) => string | null | Promise<string | null>,
+  run: (ctx: Awaited<ReturnType<typeof getViewer>>) => Promise<void>,
+  failure = "Something went wrong saving that document change.",
+): Promise<ActionResult> {
+  try {
+    const viewer = await getViewer();
+    const problem = await check(viewer);
+    if (problem) return { ok: false, error: problem };
+    await run(viewer);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof WorkflowError) return { ok: false, error: error.message };
+    console.error("Document action failed", error);
+    return { ok: false, error: failure };
+  }
+}
+
+const NOT_AUTHOR = "Documents are written by planners, supervisors and admins.";
+
+/**
+ * The revision's content from a form: written text, a file sent with the form
+ * (demo), or a file the browser already uploaded to storage (live).
+ */
+async function revisionFromForm(form: FormData, mode: "demo" | "live"): Promise<NewRevisionInput | string> {
+  const change_summary = String(form.get("change_summary") ?? "").trim();
+  const bodyText = String(form.get("body") ?? "").trim();
+  const upload = form.get("file");
+  const uploadedPath = String(form.get("file_path") ?? "");
+  let input: NewRevisionInput = { change_summary, body: bodyText || null, file: null };
+  if (uploadedPath) {
+    if (mode !== "live") return "Send the file with the form.";
+    const file = { name: String(form.get("file_name") ?? "file"), mime: String(form.get("file_mime") ?? ""), size: Number(form.get("file_size") ?? 0), path: uploadedPath };
+    const problems = fileProblems({ name: file.name, type: file.mime, size: file.size }, mode);
+    if (problems.length) return problems.join(" ");
+    input = { ...input, file };
+  } else if (upload instanceof File && upload.size > 0) {
+    if (mode === "live") return "Upload the file to storage first.";
+    const problems = fileProblems(upload, mode);
+    if (problems.length) return problems.join(" ");
+    input = {
+      ...input,
+      file: { name: upload.name, mime: upload.type, size: upload.size, path: "" },
+      file_data: Buffer.from(await upload.arrayBuffer()).toString("base64"),
+    };
+  }
+  const problems = revisionProblems({ change_summary, body: input.body, hasFile: !!input.file });
+  return problems.length ? problems.join(" ") : input;
+}
+
+/** Live: a signed URL the browser uploads a revision's file to before submitting the form. */
+export async function prepareDocumentUpload(file: { name: string; type: string; size: number }): Promise<ActionResult & { target?: UploadTarget }> {
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canDoc("author", profile.role)) return { ok: false, error: NOT_AUTHOR };
+    if (repo.mode !== "live") return { ok: false, error: "The demo takes the file with the form." };
+    const problems = fileProblems(file, "live");
+    if (problems.length) return { ok: false, error: problems.join(" ") };
+    return { ok: true, target: await repo.createUploadTarget(file.name) };
+  } catch (error) {
+    console.error("Upload target failed", error);
+    return { ok: false, error: "Couldn't start the upload." };
+  }
+}
+
+const docTypeSchema = z.enum(DOC_TYPES);
+
+export async function createDocument(_prev: ActionResult | null, form: FormData): Promise<ActionResult & { id?: string }> {
+  let id: string | undefined;
+  const result = await withDocs(
+    ({ profile }) => (canDoc("author", profile.role) ? null : NOT_AUTHOR),
+    async ({ repo, profile }) => {
+      const title = String(form.get("title") ?? "").trim();
+      const type = docTypeSchema.safeParse(form.get("doc_type"));
+      if (title.length < 3) throw new WorkflowError("Give the document a title.");
+      if (!type.success) throw new WorkflowError("Pick the document type.");
+      const revision = await revisionFromForm(form, repo.mode);
+      if (typeof revision === "string") throw new WorkflowError(revision);
+      const assets = await repo.listAssets();
+      const assetIds = form.getAll("asset_ids").map(String).filter((a) => assets.some((x) => x.id === a));
+      id = await repo.createDocument({ title, doc_type: type.data, asset_ids: assetIds, revision }, profile.id);
+    },
+  );
+  return { ...result, id };
+}
+
+export async function addDocumentRevision(documentId: string, _prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  return withDocs(
+    async ({ repo, profile }) => {
+      if (!canDoc("author", profile.role)) return NOT_AUTHOR;
+      const doc = await repo.getDocument(documentId);
+      if (!doc) return "Document not found.";
+      if (doc.status !== "active") return "An obsolete document takes no new revisions.";
+      if (doc.pending) return `Rev ${doc.pending.rev} is still waiting for review. Approve or reject it first.`;
+      return null;
+    },
+    async ({ repo, profile }) => {
+      const revision = await revisionFromForm(form, repo.mode);
+      if (typeof revision === "string") throw new WorkflowError(revision);
+      await repo.addRevision(documentId, revision, profile.id);
+    },
+  );
+}
+
+export async function reviewDocumentRevision(input: { documentId: string; revisionId: string; approve: boolean; note: string }): Promise<ActionResult> {
+  const note = input.note.trim();
+  if (!input.approve && note.length < 5) return { ok: false, error: "Say why it's rejected, so the author can fix it." };
+  return withDocs(
+    async ({ repo, profile }) => {
+      const doc = await repo.getDocument(input.documentId);
+      const rev = doc?.revisions.find((r) => r.id === input.revisionId);
+      if (!doc || !rev) return "Revision not found.";
+      if (rev.prepared_by === profile.id) return "A revision is approved by someone other than the person who wrote it.";
+      return canReview(profile.role, profile.id, rev, doc) ? null : "Revisions are approved by supervisors and admins.";
+    },
+    ({ repo, profile }) => repo.reviewRevision(input.revisionId, input.approve, note || null, profile.id),
+  );
+}
+
+export async function obsoleteDocument(input: { documentId: string; reason: string; replacedById: string | null }): Promise<ActionResult> {
+  const reason = input.reason.trim();
+  if (reason.length < 5) return { ok: false, error: "Say why it's obsolete." };
+  return withDocs(
+    async ({ repo, profile }) => {
+      if (!canDoc("obsolete", profile.role)) return "Documents are made obsolete by supervisors and admins.";
+      const doc = await repo.getDocument(input.documentId);
+      if (!doc) return "Document not found.";
+      if (doc.status !== "active") return "Already obsolete.";
+      if (input.replacedById) {
+        if (input.replacedById === input.documentId) return "A document can't replace itself.";
+        const by = await repo.getDocument(input.replacedById);
+        if (!by || by.status !== "active") return "The replacement must be an active document at this site.";
+      }
+      return null;
+    },
+    ({ repo, profile }) => repo.obsoleteDocument(input.documentId, reason, input.replacedById, profile.id),
+  );
+}
+
+export async function setDocumentAssets(documentId: string, assetIds: string[]): Promise<ActionResult> {
+  return withDocs(
+    async ({ repo, profile }) => (!canDoc("author", profile.role) ? NOT_AUTHOR : (await repo.getDocument(documentId)) ? null : "Document not found."),
+    ({ repo, profile }) => repo.setDocumentAssets(documentId, assetIds, profile.id),
+  );
+}
+
+export async function attachDocument(woId: string, documentId: string): Promise<ActionResult> {
+  return withDocs(
+    async ({ repo, profile }) => {
+      const wo = await repo.getWorkOrder(woId);
+      if (!wo) return "Work order not found.";
+      if (!canAttachDocument(profile.role, wo)) return wo.status === "open" ? "Planners, supervisors and technicians add documents." : "Closed work orders keep the documents they used.";
+      const doc = await repo.getDocument(documentId);
+      if (!doc || doc.status !== "active") return "Pick an active document.";
+      return null;
+    },
+    ({ repo, profile }) => repo.attachDocument(woId, documentId, profile.id),
+  );
+}
+
+export async function detachDocument(woId: string, documentId: string): Promise<ActionResult> {
+  return withDocs(
+    async ({ repo, profile }) => {
+      const wo = await repo.getWorkOrder(woId);
+      if (!wo) return "Work order not found.";
+      const row = (await repo.listWoDocuments(woId)).find((r) => r.document_id === documentId);
+      if (!row) return null;
+      if (row.views.length > 0) return "Someone opened this document from the work order, so it stays with the record.";
+      return canDetachDocument(profile.role, wo, row.views.length) ? null : "Planners and supervisors take documents off open work orders.";
+    },
+    ({ repo, profile }) => repo.detachDocument(woId, documentId, profile.id),
+  );
 }

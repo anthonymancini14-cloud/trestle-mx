@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" width="1100" height="760" font-family="Helvetica, Arial, sans-serif" fill="none" stroke="#111" stroke-width="1.6">
+<rect x="0" y="0" width="1100" height="760" fill="#fff" stroke="none"/>
+<rect x="12" y="12" width="1076" height="736" stroke-width="2"/>
+<g><rect x="150" y="140" width="170" height="120"/><text x="235" y="170" font-size="12" text-anchor="middle" stroke="none" fill="#111" font-weight="bold">CDU-01 (DUTY)</text><text x="235" y="190" font-size="10" text-anchor="middle" stroke="none" fill="#111">1000 KW, N+1 PUMPS</text><path d="M320 180 h60"/><path d="M380 168 l30 12 l-30 12 z"/><text x="395" y="160" font-size="9" text-anchor="middle" stroke="none" fill="#111">STR 50 µM</text><path d="M410 180 h60"/><path d="M450 172 l12 8 l-12 8 z M474 172 l-12 8 l12 8 z"/><path d="M320 230 h150"/><path d="M450 222 l12 8 l-12 8 z M474 222 l-12 8 l12 8 z"/><line x1="474" y1="180" x2="560" y2="180"/><line x1="474" y1="230" x2="600" y2="230"/><rect x="150" y="360" width="170" height="120"/><text x="235" y="390" font-size="12" text-anchor="middle" stroke="none" fill="#111" font-weight="bold">CDU-02 (STANDBY)</text><text x="235" y="410" font-size="10" text-anchor="middle" stroke="none" fill="#111">1000 KW, N+1 PUMPS</text><path d="M320 400 h60"/><path d="M380 388 l30 12 l-30 12 z"/><text x="395" y="380" font-size="9" text-anchor="middle" stroke="none" fill="#111">STR 50 µM</text><path d="M410 400 h60"/><path d="M450 392 l12 8 l-12 8 z M474 392 l-12 8 l12 8 z"/><path d="M320 450 h150"/><path d="M450 442 l12 8 l-12 8 z M474 442 l-12 8 l12 8 z"/><line x1="474" y1="400" x2="560" y2="400"/><line x1="474" y1="450" x2="600" y2="450"/><line x1="560" y1="180" x2="560" y2="400" stroke-width="3"/><line x1="600" y1="230" x2="600" y2="450" stroke-width="3"/><text x="548" y="170" font-size="10" text-anchor="end" stroke="none" fill="#111" font-weight="bold">TCS SUPPLY</text><text x="612" y="222" font-size="10" text-anchor="start" stroke="none" fill="#111" font-weight="bold">TCS RETURN</text><line x1="560" y1="260" x2="760" y2="260"/><line x1="600" y1="310" x2="760" y2="310"/><rect x="760" y="240" width="140" height="90"/><text x="830" y="280" font-size="12" text-anchor="middle" stroke="none" fill="#111" font-weight="bold">CAB-A03</text><text x="830" y="298" font-size="9" text-anchor="middle" stroke="none" fill="#111">DIRECT-TO-CHIP</text><line x1="560" y1="380" x2="760" y2="380"/><line x1="600" y1="430" x2="760" y2="430"/><rect x="760" y="360" width="140" height="90"/><text x="830" y="400" font-size="12" text-anchor="middle" stroke="none" fill="#111" font-weight="bold">CAB-A04</text><text x="830" y="418" font-size="9" text-anchor="middle" stroke="none" fill="#111">DIRECT-TO-CHIP</text><text x="80" y="560" font-size="12" text-anchor="start" stroke="none" fill="#111" font-weight="bold">NOTES</text><text x="80" y="580" font-size="11" text-anchor="start" stroke="none" fill="#111">1. SECONDARY FLUID PG25 PER CFD-SPC-0001.</text><text x="80" y="598" font-size="11" text-anchor="start" stroke="none" fill="#111">2. STRAINERS 50 µM PER CFD-MOC-0001. CHANGE PER CFD-PRC-0001.</text><text x="80" y="616" font-size="11" text-anchor="start" stroke="none" fill="#111">3. HIGH-POINT VENTS AT EACH CABINET MANIFOLD.</text></g>
+<rect x="760" y="28" width="316" height="46" stroke-width="1.2"/><line x1="760" y1="50" x2="1076" y2="50" stroke-width="1"/><line x1="792" y1="28" x2="792" y2="74" stroke-width="1"/>
+<g stroke="none" fill="#111">
+<text x="768" y="43" font-size="10" font-weight="bold">REV</text>
+<text x="800" y="43" font-size="10" font-weight="bold">DESCRIPTION</text>
+<text x="770" y="66" font-size="11">A</text><text x="800" y="66" font-size="11">ISSUED WITH ROW A LIQUID COOLING</text>
+</g>
+<rect x="680" y="610" width="408" height="138" stroke-width="2"/>
+<line x1="680" y1="650" x2="1088" y2="650"/>
+<line x1="680" y1="708" x2="1088" y2="708"/>
+<line x1="980" y1="708" x2="980" y2="748"/>
+<g stroke="none" fill="#111">
+<text x="690" y="636" font-size="15" font-weight="bold">CEDAR FLATS DATA CENTER (FICTIONAL)</text>
+<text x="690" y="672" font-size="14">DATA HALL 1 ROW A</text>
+<text x="690" y="692" font-size="14">LIQUID COOLING SCHEMATIC</text>
+<text x="690" y="724" font-size="9">DRAWING NO.</text>
+<text x="690" y="741" font-size="16" font-weight="bold" font-family="Courier New, monospace">CFD-DWG-0002</text>
+<text x="990" y="724" font-size="9">REV</text>
+<text x="990" y="743" font-size="22" font-weight="bold">A</text>
+<text x="24" y="738" font-size="10" fill="#666">Fictional demo drawing. Not for construction.</text>
+</g>
+</svg>

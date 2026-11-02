@@ -622,3 +622,142 @@ export interface TroubleshootingRecord {
 export interface ResolutionHistoryItem extends Resolution {
   wo: Pick<WorkOrder, "id" | "wo_number" | "title" | "asset_id" | "wo_type" | "status" | "closed_at" | "created_at">;
 }
+
+// ---------------------------------------------------------------- Document control (TMX-026)
+
+/** Controlled document types. Each has a short code used in the document number, e.g. BRP-DWG-0003. */
+export const DOC_TYPES = ["oem_manual", "drawing", "specification", "procedure", "moc"] as const;
+export type DocType = (typeof DOC_TYPES)[number];
+
+export const DOC_TYPE_LABELS: Record<DocType, string> = {
+  oem_manual: "OEM manual",
+  drawing: "Drawing",
+  specification: "Technical specification",
+  procedure: "Procedure",
+  moc: "Management of change",
+};
+
+export const DOC_TYPE_CODES: Record<DocType, string> = {
+  oem_manual: "OEM",
+  drawing: "DWG",
+  specification: "SPC",
+  procedure: "PRC",
+  moc: "MOC",
+};
+
+/** Active documents are in use; obsolete ones are archived (kept, read-only) and may name a replacement. */
+export type DocStatus = "active" | "obsolete";
+
+/**
+ * A revision is drafted, then approved by a second person and becomes current;
+ * the revision it replaces is superseded (archived). A rejected draft is kept.
+ * A revision's content never changes after it is written.
+ */
+export type RevisionStatus = "draft" | "current" | "superseded" | "rejected";
+
+export interface ControlledDocument {
+  id: string;
+  site_id: string;
+  /** e.g. CFD-DWG-0001: site code, type code, sequence. Assigned when created. */
+  doc_number: string;
+  title: string;
+  doc_type: DocType;
+  status: DocStatus;
+  /** Set when obsoleted: the document that replaces it, if any. */
+  replaced_by_id: string | null;
+  obsolete_reason: string | null;
+  obsoleted_by: string | null;
+  obsoleted_at: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** The revision's file, when it has one (PDF, drawing, image). */
+export interface RevisionFile {
+  name: string;
+  mime: string;
+  size: number;
+  /** Storage object path (live) or a static or in-memory path (demo). */
+  path: string;
+}
+
+export interface DocumentRevision {
+  id: string;
+  document_id: string;
+  /** Revision letter: A, B, C … */
+  rev: string;
+  status: RevisionStatus;
+  /** What changed in this revision. */
+  change_summary: string;
+  /** Text written in Trestle (procedures, MOCs, spec sheets), in simple markdown. */
+  body: string | null;
+  file: RevisionFile | null;
+  prepared_by: string | null;
+  prepared_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  /** When it became current. */
+  effective_at: string | null;
+  /** When a newer revision replaced it. */
+  superseded_at: string | null;
+}
+
+/** A document with its current revision and the assets it applies to. */
+export interface DocumentListItem extends ControlledDocument {
+  current: DocumentRevision | null;
+  /** A draft waiting for review, if there is one. */
+  pending: DocumentRevision | null;
+  assets: Pick<Asset, "id" | "floc" | "name">[];
+  replaced_by: Pick<ControlledDocument, "id" | "doc_number" | "title"> | null;
+}
+
+export interface DocumentDetail extends DocumentListItem {
+  /** Newest first. */
+  revisions: (DocumentRevision & { prepared_by_name: string | null; reviewed_by_name: string | null })[];
+  /** Work orders that referenced it, with the revision each used (pinned at close). */
+  usage: DocumentUsage[];
+}
+
+export interface DocumentUsage {
+  wo: Pick<WorkOrder, "id" | "wo_number" | "title" | "status" | "closed_at">;
+  /** The revision kept with the closed work order; null while the work order is open. */
+  revision_id: string | null;
+  rev: string | null;
+}
+
+/** How a document came to be on a work order. */
+export type WoDocSource = "plan" | "attached" | "opened";
+
+/**
+ * A document on a work order. While the work order is open it follows the
+ * current revision; when it closes, the revision used is pinned and kept.
+ */
+export interface WoDocument {
+  id: string;
+  wo_id: string;
+  document_id: string;
+  source: WoDocSource;
+  pinned_revision_id: string | null;
+  added_by: string | null;
+  added_at: string;
+}
+
+/** Each time someone opened a document from a work order, and which revision they saw. */
+export interface WoDocumentView {
+  id: string;
+  wo_id: string;
+  document_id: string;
+  revision_id: string;
+  stage: WoStage;
+  viewed_by: string | null;
+  viewed_at: string;
+}
+
+export interface WoDocumentRow extends WoDocument {
+  document: DocumentListItem;
+  /** The pinned revision on closed work; the current one while open. */
+  revision: DocumentRevision | null;
+  added_by_name: string | null;
+  views: (WoDocumentView & { rev: string; viewer_name: string | null })[];
+}

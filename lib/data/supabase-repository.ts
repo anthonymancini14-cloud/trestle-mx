@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import { PM_LEAD_DAYS } from "@/lib/pm/program";
 import { latestEta } from "@/lib/schedule/calendar";
-import type { NewFinding, NewOperatorAction, NewResolution, NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import { citedDocuments, currentRevision, storagePath } from "@/lib/documents";
+import type { NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
   Addendum,
   AreaCode,
@@ -11,8 +12,15 @@ import type {
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
+  ControlledDocument,
   Craft,
   CrewMember,
+  DocumentDetail,
+  DocumentListItem,
+  DocumentRevision,
+  WoDocument,
+  WoDocumentRow,
+  WoDocumentView,
   CrewShift,
   FailureCode,
   Finding,
@@ -352,6 +360,15 @@ export class SupabaseRepository implements Repository {
   async commitPlan(woId: string, plan: JobPlan, _actorId: string) {
     // Atomic: replaces tasks and parts, reserves stock, logs the event, advances the stage.
     unwrapVoid(await this.db.rpc("commit_work_order_plan", { p_wo_id: woId, p_plan: plan }));
+    // Documents the plan cites by number go on the work order.
+    const cited = citedDocuments(plan.references, await this.listDocuments());
+    if (cited.length > 0) {
+      unwrapVoid(
+        await this.db
+          .from("wo_documents")
+          .upsert(cited.map((d) => ({ wo_id: woId, document_id: d.id, source: "plan", added_by: _actorId })), { onConflict: "wo_id,document_id", ignoreDuplicates: true }),
+      );
+    }
   }
 
   async scheduleWorkOrder(woId: string, date: string, assigneeId: string, _actorId: string) {
@@ -468,6 +485,200 @@ export class SupabaseRepository implements Repository {
   ) {
     unwrapVoid(await this.db.from("wo_events").insert({ ...event, wo_id: woId, actor_id: actorId }));
   }
+  // ---------------------------------------------------------------- Document control
+
+  async listDocuments(filter: { assetId?: string; includeObsolete?: boolean } = {}): Promise<DocumentListItem[]> {
+    let q = this.db.from("documents").select(DOC_SELECT).eq("site_id", this.siteId).order("doc_number");
+    if (!filter.includeObsolete) q = q.eq("status", "active");
+    if (filter.assetId) {
+      const links = unwrap<{ document_id: string }[]>(await this.db.from("document_assets").select("document_id").eq("asset_id", filter.assetId));
+      if (links.length === 0) return [];
+      q = q.in("id", links.map((l) => l.document_id));
+    }
+    return unwrap<DocRow[]>((await q) as unknown as Result<DocRow[]>).map(toDocItem);
+  }
+
+  async getDocument(id: string): Promise<DocumentDetail | null> {
+    const res = await this.db.from("documents").select(DOC_SELECT).eq("id", id).eq("site_id", this.siteId).maybeSingle();
+    if (res.error) throw new Error(res.error.message);
+    if (!res.data) return null;
+    const item = toDocItem(res.data as unknown as DocRow);
+    type Named = RevisionRow & { preparer: { full_name: string } | null; reviewer: { full_name: string } | null };
+    const [revs, usage] = await Promise.all([
+      this.db
+        .from("document_revisions")
+        .select("*, preparer:profiles!document_revisions_prepared_by_fkey(full_name), reviewer:profiles!document_revisions_reviewed_by_fkey(full_name)")
+        .eq("document_id", id)
+        .order("prepared_at", { ascending: false }),
+      this.db
+        .from("wo_documents")
+        .select(USAGE_SELECT)
+        .eq("document_id", id),
+    ]);
+    type UsageRow = { pinned_revision_id: string | null; wo: DocumentDetail["usage"][number]["wo"]; pinned: { rev: string } | null };
+    return {
+      ...item,
+      revisions: unwrap<Named[]>(revs).map(({ preparer, reviewer, ...r }) => ({
+        ...toRevision(r),
+        prepared_by_name: preparer?.full_name ?? null,
+        reviewed_by_name: reviewer?.full_name ?? null,
+      })),
+      usage: unwrap<UsageRow[]>(usage as unknown as Result<UsageRow[]>)
+        .map((u) => ({ wo: u.wo, revision_id: u.pinned_revision_id, rev: u.pinned?.rev ?? null }))
+        .sort((a, b) => (b.wo.closed_at ?? "9").localeCompare(a.wo.closed_at ?? "9")),
+    };
+  }
+
+  private revisionRow(documentId: string, input: NewRevisionInput, actorId: string) {
+    return {
+      document_id: documentId,
+      site_id: this.siteId,
+      rev: "", // assigned by the database: the next letter
+      change_summary: input.change_summary,
+      body: input.body,
+      file_name: input.file?.name ?? null,
+      file_mime: input.file?.mime ?? null,
+      file_size: input.file?.size ?? null,
+      storage_path: input.file?.path ?? null,
+      prepared_by: actorId,
+    };
+  }
+
+  async createDocument(input: NewDocumentInput, actorId: string): Promise<string> {
+    const doc = unwrap<{ id: string }>(
+      await this.db
+        .from("documents")
+        // The database assigns the number.
+        .insert({ site_id: this.siteId, doc_number: "", title: input.title, doc_type: input.doc_type, created_by: actorId })
+        .select("id")
+        .single(),
+    );
+    unwrapVoid(await this.db.from("document_revisions").insert(this.revisionRow(doc.id, input.revision, actorId)));
+    await this.setDocumentAssets(doc.id, input.asset_ids, actorId);
+    return doc.id;
+  }
+
+  async addRevision(documentId: string, input: NewRevisionInput, actorId: string): Promise<string> {
+    return unwrap<{ id: string }>(await this.db.from("document_revisions").insert(this.revisionRow(documentId, input, actorId)).select("id").single()).id;
+  }
+
+  async reviewRevision(revisionId: string, approve: boolean, note: string | null, _actorId: string) {
+    unwrapVoid(await this.db.rpc("review_document_revision", { p_revision_id: revisionId, p_approve: approve, p_note: note }));
+  }
+
+  async obsoleteDocument(documentId: string, reason: string, replacedById: string | null, _actorId: string) {
+    unwrapVoid(await this.db.rpc("obsolete_document", { p_document_id: documentId, p_reason: reason, p_replaced_by: replacedById }));
+  }
+
+  async setDocumentAssets(documentId: string, assetIds: string[], actorId: string) {
+    unwrapVoid(await this.db.from("document_assets").delete().eq("document_id", documentId));
+    const ids = [...new Set(assetIds)];
+    if (ids.length > 0) {
+      unwrapVoid(
+        await this.db.from("document_assets").insert(ids.map((asset_id) => ({ document_id: documentId, asset_id, site_id: this.siteId, added_by: actorId }))),
+      );
+    }
+  }
+
+  async createUploadTarget(fileName: string): Promise<UploadTarget> {
+    const path = storagePath(this.siteId, crypto.randomUUID(), fileName);
+    const res = await this.db.storage.from("documents").createSignedUploadUrl(path);
+    if (res.error) throw new Error(res.error.message);
+    return { path: res.data.path, signed_url: res.data.signedUrl, token: res.data.token };
+  }
+
+  async getRevisionFile(revisionId: string): Promise<RevisionFileContent | null> {
+    const res = await this.db.from("document_revisions").select("storage_path").eq("id", revisionId).maybeSingle();
+    const path = (res.data as { storage_path: string | null } | null)?.storage_path;
+    if (!path) return null;
+    // Demo seed files ship with the app.
+    if (path.startsWith("/")) return { url: path };
+    const signed = await this.db.storage.from("documents").createSignedUrl(path, 600);
+    if (signed.error) throw new Error(signed.error.message);
+    return { url: signed.data.signedUrl };
+  }
+
+  async listWoDocuments(woId: string): Promise<WoDocumentRow[]> {
+    const wo = unwrap<{ status: string }>(await this.db.from("work_orders").select("status").eq("id", woId).single());
+    type LinkRow = WoDocument & { document: DocRow; pinned: RevisionRow | null; adder: { full_name: string } | null };
+    type ViewRow = WoDocumentView & { revision: { rev: string } | null; viewer: { full_name: string } | null };
+    const [links, views] = await Promise.all([
+      this.db
+        .from("wo_documents")
+        .select(WO_DOC_SELECT)
+        .eq("wo_id", woId),
+      this.db
+        .from("wo_document_views")
+        .select("*, revision:document_revisions(rev), viewer:profiles(full_name)")
+        .eq("wo_id", woId)
+        .order("viewed_at", { ascending: false }),
+    ]);
+    const allViews = unwrap<ViewRow[]>(views);
+    return unwrap<LinkRow[]>(links as unknown as Result<LinkRow[]>)
+      .map(({ document, pinned, adder, ...l }) => {
+        const doc = toDocItem(document);
+        return {
+          ...l,
+          document: doc,
+          revision: wo.status === "open" ? doc.current : pinned ? toRevision(pinned) : null,
+          added_by_name: adder?.full_name ?? null,
+          views: allViews
+            .filter((v) => v.document_id === l.document_id)
+            .map(({ revision, viewer, ...v }) => ({ ...v, rev: revision?.rev ?? "?", viewer_name: viewer?.full_name ?? null })),
+        };
+      })
+      .sort((a, b) => a.document.doc_number.localeCompare(b.document.doc_number));
+  }
+
+  async attachDocument(woId: string, documentId: string, actorId: string) {
+    unwrapVoid(
+      await this.db
+        .from("wo_documents")
+        .upsert({ wo_id: woId, document_id: documentId, source: "attached", added_by: actorId }, { onConflict: "wo_id,document_id", ignoreDuplicates: true }),
+    );
+  }
+
+  async detachDocument(woId: string, documentId: string, _actorId: string) {
+    unwrapVoid(await this.db.from("wo_documents").delete().eq("wo_id", woId).eq("document_id", documentId));
+  }
+
+  async openWoDocument(woId: string, documentId: string, _actorId: string): Promise<string> {
+    return unwrap<string>(await this.db.rpc("open_wo_document", { p_wo_id: woId, p_document_id: documentId }));
+  }
+
+}
+
+// ---------------------------------------------------------------- Document control rows
+
+type RevisionRow = Omit<DocumentRevision, "file"> & { file_name: string | null; file_mime: string | null; file_size: number | null; storage_path: string | null };
+
+function toRevision({ file_name, file_mime, file_size, storage_path, ...r }: RevisionRow): DocumentRevision {
+  return { ...r, file: storage_path ? { name: file_name ?? "file", mime: file_mime ?? "application/octet-stream", size: Number(file_size ?? 0), path: storage_path } : null };
+}
+
+/** Typed as string so rows cast to our shape. */
+const DOC_SELECT: string =
+  "*, revisions:document_revisions(*), links:document_assets(asset:assets(id, floc, name)), replaced_by:documents!documents_replaced_by_id_fkey(id, doc_number, title)";
+
+const USAGE_SELECT: string =
+  "pinned_revision_id, wo:work_orders(id, wo_number, title, status, closed_at), pinned:document_revisions!wo_documents_pinned_revision_id_fkey(rev)";
+const WO_DOC_SELECT: string = `*, document:documents(${DOC_SELECT}), pinned:document_revisions!wo_documents_pinned_revision_id_fkey(*), adder:profiles!wo_documents_added_by_fkey(full_name)`;
+
+type DocRow = ControlledDocument & {
+  revisions: RevisionRow[];
+  links: { asset: { id: string; floc: string; name: string } }[];
+  replaced_by: DocumentListItem["replaced_by"];
+};
+
+function toDocItem({ revisions, links, ...doc }: DocRow): DocumentListItem {
+  const revs = (revisions ?? []).map(toRevision);
+  return {
+    ...doc,
+    current: currentRevision(revs),
+    pending: revs.find((r) => r.status === "draft") ?? null,
+    assets: (links ?? []).map((l) => l.asset).sort((a, b) => a.floc.localeCompare(b.floc)),
+    replaced_by: doc.replaced_by ?? null,
+  };
 }
 
 function unwrapVoid(result: { error: { message: string } | null }): void {

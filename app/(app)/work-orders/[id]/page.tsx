@@ -15,6 +15,8 @@ import { currentResolution, DEFAULT_REPEAT_WINDOW_DAYS, EVIDENCE_TYPES, evidence
 import { TroubleshootingPanel } from "@/components/work-orders/troubleshooting-panel";
 import { daysBetween } from "@/lib/pm/program";
 import { JobPanel } from "@/components/work-orders/job-panel";
+import { WoDocumentsPanel } from "@/components/documents/wo-documents-panel";
+import { canAttachDocument, canDoc } from "@/lib/workflow";
 
 export default async function WorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -29,11 +31,15 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
   const primary = job.find((w) => w.wce_seq === 1) ?? wo;
   const deferredFrom = wo.deferred_from_wo_id ? await repo.getWorkOrder(wo.deferred_from_wo_id) : null;
   const deferredTo = wo.deferred_to_jcn ? (await repo.listJcn(wo.deferred_to_jcn)).find((w) => w.wce_seq === 1) : undefined;
-  const [record, codes, assetHistory] = await Promise.all([
+  const [record, codes, assetHistory, woDocs, siteDocs] = await Promise.all([
     repo.getTroubleshooting(wo.id),
     repo.listFailureCodes(),
     wo.asset ? repo.listResolutions({ assetId: wo.asset.id }) : Promise.resolve([]),
+    repo.listWoDocuments(wo.id),
+    repo.listDocuments(),
   ]);
+  const onWo = new Set(woDocs.map((d) => d.document_id));
+  const assetDocs = wo.asset ? siteDocs.filter((d) => !onWo.has(d.id) && d.current && d.assets.some((a) => a.id === wo.asset!.id)) : [];
   const evidence = evidenceBlocker(wo, record.resolutions);
   const evidenceApplies = wo.wce_seq === 1 && EVIDENCE_TYPES.includes(wo.wo_type) && !wo.deferred_to_jcn;
   const closeBlocker = primaryCloseBlocker(wo, job) ?? evidence;
@@ -151,6 +157,16 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
               addendum: canRecord("addendum", profile.role, wo, profile.id),
             }}
             evidence={evidenceApplies && wo.status === "open" && (wo.stage === "execution" || wo.stage === "closure") ? (evidence ?? "") : null}
+          />
+
+          <WoDocumentsPanel
+            woId={wo.id}
+            woOpen={wo.status === "open"}
+            rows={woDocs}
+            assetDocs={assetDocs}
+            siteDocs={siteDocs.filter((d) => !onWo.has(d.id) && d.current && !assetDocs.includes(d))}
+            canAttach={canAttachDocument(profile.role, wo)}
+            canDetach={wo.status === "open" && canDoc("detach", profile.role)}
           />
 
           <JobPanel jcn={wo.jcn} job={job} currentId={wo.id} canAdd={canAddWce(profile.role, primary)} />

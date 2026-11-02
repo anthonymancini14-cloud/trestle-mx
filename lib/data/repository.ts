@@ -11,6 +11,11 @@ import type {
   ResolutionHistoryItem,
   TroubleshootingRecord,
   CalendarWorkOrder,
+  DocType,
+  DocumentDetail,
+  DocumentListItem,
+  RevisionFile,
+  WoDocumentRow,
   CrewMember,
   InventoryItem,
   Organization,
@@ -34,6 +39,34 @@ export interface WorkOrderFilter {
 export type NewOperatorAction = Pick<OperatorAction, "conditions" | "action" | "result" | "ran_minutes" | "corrects_id">;
 export type NewFinding = Pick<Finding, "test" | "value" | "unit" | "spec" | "result" | "note" | "corrects_id">;
 export type NewResolution = Omit<Resolution, "id" | "wo_id" | "supersedes_id" | "created_by" | "created_at">;
+
+export interface NewRevisionInput {
+  change_summary: string;
+  /** Text written in Trestle, or null when the revision is a file. */
+  body: string | null;
+  /** A file already uploaded to storage (live) … */
+  file: RevisionFile | null;
+  /** … or, in the demo, the file's bytes (base64), kept in memory. */
+  file_data?: string;
+}
+
+export interface NewDocumentInput {
+  title: string;
+  doc_type: DocType;
+  asset_ids: string[];
+  /** Revision A, a draft until someone else approves it. */
+  revision: NewRevisionInput;
+}
+
+/** Where to put a revision's file before registering it. Live only: the browser uploads straight to storage. */
+export interface UploadTarget {
+  path: string;
+  signed_url: string;
+  token: string;
+}
+
+/** A revision's file: a URL to send the browser to, or the bytes (demo uploads). */
+export type RevisionFileContent = { url: string } | { data: Uint8Array; mime: string; name: string };
 
 export interface NewTimeOffInput {
   profile_id: string;
@@ -109,6 +142,34 @@ export interface Repository {
   recordResolution(woId: string, input: NewResolution, actorId: string): Promise<void>;
   /** A note on a closed work order, which is never edited. */
   addAddendum(woId: string, body: string, actorId: string): Promise<void>;
+
+  /** Controlled documents at the site. Obsolete ones only when asked for. */
+  listDocuments(filter?: { assetId?: string; includeObsolete?: boolean }): Promise<DocumentListItem[]>;
+  getDocument(id: string): Promise<DocumentDetail | null>;
+  /** A new document with its revision A as a draft. Returns the document id. */
+  createDocument(input: NewDocumentInput, actorId: string): Promise<string>;
+  /** A new draft revision (the next letter) on an active document. Returns the revision id. */
+  addRevision(documentId: string, input: NewRevisionInput, actorId: string): Promise<string>;
+  /** Approve a draft (it becomes current; the current one is superseded) or reject it. Not your own. */
+  reviewRevision(revisionId: string, approve: boolean, note: string | null, actorId: string): Promise<void>;
+  /** Archive a document as obsolete, optionally naming the active document that replaces it. Pending drafts are rejected. */
+  obsoleteDocument(documentId: string, reason: string, replacedById: string | null, actorId: string): Promise<void>;
+  setDocumentAssets(documentId: string, assetIds: string[], actorId: string): Promise<void>;
+  /** Live: a signed upload URL for a revision's file. */
+  createUploadTarget(fileName: string): Promise<UploadTarget>;
+  getRevisionFile(revisionId: string): Promise<RevisionFileContent | null>;
+
+  /** Documents on a work order, with the revision each shows (pinned once closed) and who opened them. */
+  listWoDocuments(woId: string): Promise<WoDocumentRow[]>;
+  attachDocument(woId: string, documentId: string, actorId: string): Promise<void>;
+  /** Only while open and only if nobody has opened it from the work order. */
+  detachDocument(woId: string, documentId: string, actorId: string): Promise<void>;
+  /**
+   * Open a document from a work order. While the work order is open this logs
+   * the view (and adds the document if it wasn't on it) and returns the current
+   * revision; once closed it returns the revision kept with the work order.
+   */
+  openWoDocument(woId: string, documentId: string, actorId: string): Promise<string>;
 
   /** Report a new discrepancy: a new JCN with its WCE -001. Returns the work order id. */
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;

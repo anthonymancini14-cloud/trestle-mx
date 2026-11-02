@@ -29,6 +29,10 @@ const TABLE_KEYS = {
   finding: "017",
   resolution: "018",
   addendum: "019",
+  document: "01a",
+  documentRevision: "01b",
+  woDocument: "01c",
+  woDocumentView: "01d",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

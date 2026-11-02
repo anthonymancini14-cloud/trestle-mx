@@ -125,6 +125,24 @@ In the database, the resolution and its finding links are written by one `SECURI
 
 ---
 
+## Document control
+
+Every asset carries its controlled documents: OEM manuals, drawings, technical specifications, procedures and management of change (MOC) records. The crew opens them from the work order, in the field, on a phone or tablet.
+
+| Rule | How it works |
+|---|---|
+| **Numbered and revised** | Each document gets a number from its site and type (`CFD-DWG-0001`). Revisions are lettered A, B, C. A revision is a file (PDF, drawing, image) or text written in Trestle (procedures, MOCs, data sheets). Its content never changes after it is written. |
+| **Two people** | Planners, supervisors and admins write revisions as drafts. A supervisor or admin who didn't write it approves or rejects it. On approval it becomes current and the revision before it is superseded: archived, still readable, marked "for reference only". |
+| **Obsolete, archived, replaced** | A supervisor or admin makes a document obsolete with a reason and, usually, the document that replaces it. It leaves the active register and can't go on new work. Pending drafts are rejected; every revision stays in the archive. |
+| **Available for the whole job** | Documents go on a WCE from the plan (Planning Mode cites them by number), by hand, or by being opened from it. While the work order is open each one shows the current revision, warns when a newer revision or an obsolete flag has appeared since it was opened, and logs who opened which revision in which stage. |
+| **Kept with the record** | When the WCE closes (or closes as deferred), each document is pinned to the revision the crew last opened, or the one current at close. Years later the closed work order still opens exactly that revision, with a note when a newer one is current. A document that was opened from the work order can't be taken off it. |
+
+Planning Mode reads the current revision of each document on the asset (the text of written procedures and specifications, and the number and title of files) and plans from the procedure's steps and the OEM's values, citing each document it relies on. The demo shows the P-201A bearing job keeping Rev B of the bearing procedure, which was later revised to Rev C with the soft foot check its debrief asked for.
+
+In the database, approving, rejecting and making obsolete run as `SECURITY DEFINER` functions that check role, site and the two-person rule. Triggers assign numbers and revision letters, freeze revision content, allow status to move only forward, refuse new revisions on obsolete documents, pin documents at close and refuse any later change. Files live in a private storage bucket, one folder per site, uploaded straight from the browser with a signed URL; uploaded SVGs are served sandboxed. Field markups by technicians, review dates on procedures, and documents shared across sites are designed, not built.
+
+---
+
 ## Job control numbers and work center events
 
 Numbering follows the Air Force job control system Trestle.MX started from.
@@ -219,9 +237,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Twenty-seven tables, created in dependency order by the migrations in `supabase/migrations/`:
+Thirty-two tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -279,6 +297,7 @@ app/
   (app)/schedule            scheduling calendar: booked and forecast work against crew capacity, drag to schedule
   (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
+  (app)/documents           document control: register, revisions, review, archive, file viewer
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
 lib/
@@ -292,7 +311,7 @@ lib/
   assets/                   asset search for pickers
   demo/                     fictional sites: data center and utility plant
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control
 ```
 
 ## Design decisions
@@ -312,7 +331,8 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
 - Tray fill tracking from cable outer diameters against each section's design fill
 - Scheduling: links between WCEs (start after, finish before), rotating shift patterns, and suggesting a week's schedule for approval
-- Retrieval over OEM manuals as a fourth context layer
+- Retrieval over uploaded OEM manual PDFs as a fourth context layer (written procedures and specs already reach Planning Mode)
+- Document control: technician field markups (redlines) that start a revision, periodic review dates, and org-wide documents shared across sites
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner
 
 ---

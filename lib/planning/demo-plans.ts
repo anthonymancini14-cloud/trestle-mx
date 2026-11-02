@@ -72,6 +72,9 @@ const p201bPlan: JobPlan = {
   references: [
     { source: "{{WO:1009}} (P-201A bearing replacement)", note: "Ran 15.5 h vs 12 planned; found soft foot; needed 5-ton chain fall. Built into steps 20, 30 and 70 and the hours." },
     { source: "{{WO:1012}} (P-201B oil change and route)", note: "Inboard vibration trend and metallic sheen in oil support the bearing diagnosis." },
+    { source: "BRP-PRC-0003 Rev C (split-case pump bearing replacement)", note: "Current procedure. Rev C added the soft foot check and the 5-ton chain fall after the P-201A job." },
+    { source: "BRP-OEM-0001 Rev A (HSC 10x12-17 manual)", note: "Bearing numbers, split-line torque 650 ft-lb, alignment targets." },
+    { source: "BRP-MOC-0001 Rev A (online vibration transmitters)", note: "Both pumps have transmitters on the bearing housings: disconnect before pulling the bearings, refit and check the 4-20 mA loop after." },
     { source: "Rotating equipment practice (layer 1)", note: "Soft foot before alignment; tolerance targets; bearing mounting." },
     { source: "Energy control (layer 1)", note: "Reverse rotation and stored pressure on pumps; verification of isolation." },
   ],

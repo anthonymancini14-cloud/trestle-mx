@@ -1,4 +1,5 @@
 import { seedId } from "./ids";
+import { buildDocuments, type DocumentRows } from "./documents-build";
 import {
   AREAS,
   ASSETS,
@@ -64,7 +65,7 @@ export interface SiteAccess {
   site_id: string;
 }
 
-export interface Dataset {
+export interface Dataset extends DocumentRows {
   org: Organization;
   sites: Site[];
   areas: AreaCode[];
@@ -601,6 +602,14 @@ export function buildDataset(now: Date = new Date()): Dataset {
   }
   assignJcns(workOrders, seedRows, events);
   const record = buildTroubleshooting(workOrders, seedRows, now);
+  const documents = buildDocuments({
+    now,
+    sites: DEMO_SITES,
+    assets: ALL_ASSETS,
+    profiles: ALL_PROFILES,
+    workOrders,
+    woIdByNum: new Map(seedRows.map((r) => [r.def.num, r.id])),
+  });
 
   // PM schedule dates: from linked work orders where there are any, otherwise a
   // stable spread across each interval, with a few overdue for realism.
@@ -691,6 +700,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     tasks,
     woParts,
     events,
+    ...documents,
   };
 }
 

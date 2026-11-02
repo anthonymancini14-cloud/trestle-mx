@@ -8,6 +8,7 @@ import type {
   AssetClassWithModes,
   AssetDetail,
   CableSpec,
+  DocumentListItem,
   PmScheduleRow,
   ResolutionHistoryItem,
   TroubleshootingRecord,
@@ -17,6 +18,10 @@ import type {
   Vertical,
   WorkOrderListItem,
 } from "@/types/domain";
+import { DOC_TYPE_LABELS } from "@/types/domain";
+
+/** Characters of written procedure and spec text passed to Planning Mode per work order. */
+const DOC_TEXT_BUDGET = 12_000;
 
 /**
  * Layer 3: site-specific context assembled from the database for one work
@@ -45,6 +50,8 @@ export interface SiteContext {
   job: WorkOrderListItem[];
   /** This WCE's troubleshooting record so far. */
   record: TroubleshootingRecord;
+  /** Active controlled documents for the asset, each with its current revision (TMX-026). */
+  documents: DocumentListItem[];
   /** Resolutions on the history work orders, by work order id (the cause behind each past job). */
   causes: Map<string, ResolutionHistoryItem>;
   today: string;
@@ -104,6 +111,7 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
     job: await repo.listJcn(workOrder.jcn),
     record: await repo.getTroubleshooting(workOrder.id),
     causes: await causesFor(repo, historyAssetIds),
+    documents: asset ? (await repo.listDocuments({ assetId: asset.id })).filter((d) => d.current) : [],
     today: todayAt(site.timezone),
   };
 }
@@ -200,6 +208,20 @@ export function formatSiteContext(ctx: SiteContext): string {
       lines.push(
         `- ${s.task.code} ${s.task.title}: every ${s.interval_days} days, ${when} (${s.next_due_on}), ${s.task.est_hours} h ${s.task.craft}${s.task.requires_shutdown ? ", needs the asset out of service" : ""}. Addresses ${s.task.failure_mode_codes.join(", ")}.${s.open_wo ? ` Open work order ${s.open_wo.wo_number}.` : ""}`,
       );
+    }
+  }
+  if (ctx.asset) {
+    lines.push("", "## Controlled documents for this asset (current revisions only; cite by number in references)");
+    if (!ctx.documents.length) lines.push("None linked to this asset. Say in the open questions if the job needs a procedure that doesn't exist yet.");
+    let budget = DOC_TEXT_BUDGET;
+    for (const d of ctx.documents) {
+      const rev = d.current!;
+      lines.push(`- ${d.doc_number} Rev ${rev.rev}, ${DOC_TYPE_LABELS[d.doc_type]}: ${d.title}.${rev.file ? ` A ${rev.file.mime === "application/pdf" ? "PDF" : "drawing or file"} the crew opens from the work order.` : ""}${d.pending ? ` Rev ${d.pending.rev} is in review; don't use it.` : ""}`);
+      if (rev.body && budget > 0) {
+        const text = rev.body.length > budget ? `${rev.body.slice(0, budget)}\n[… truncated]` : rev.body;
+        budget -= text.length;
+        lines.push("  ```", ...text.split("\n").map((l) => `  ${l}`), "  ```");
+      }
     }
   }
   if (ctx.related.length) {
