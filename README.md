@@ -103,6 +103,21 @@ Planning Mode sees the asset's PM schedule and folds PMs that fall due soon into
 
 ---
 
+## Job control numbers and work center events
+
+Numbering follows the Air Force job control system Trestle.MX started from.
+
+| Piece | How it works |
+|---|---|
+| **JCN** | `263045000`: 26 = year, 304 = Julian day, 5000 = the site's job ID. Each site has a 4-digit block (Cedar Flats 5000, Basalt Ridge 1000); the job ID counts up from it each day and starts over the next Julian day |
+| **WCE** | Each shop's work on a discrepancy is a work center event: `263045000-001`, `-002` … numbered within the JCN. Every WCE runs the full six-stage lifecycle on its own |
+| **Close-out order** | WCE -001 belongs to the shop primarily responsible. It closes last, once every other WCE on the JCN is closed, and its close-out is the corrective action summary |
+| **Deferral** | A WCE that can't be closed (a known issue that doesn't affect safety, crew or function) is written up under its own new JCN, and the WCE is signed off "Corrective action deferred, see JCN …". Parts it held go back to stock |
+
+In the database a trigger numbers every new work order under a per-site lock, numbers never change, and a trigger refuses closing -001 while other WCEs are open. Existing work orders were numbered from the date they were written up.
+
+---
+
 ## Scheduling calendar
 
 One board for the scheduler: what is booked each day, what is coming, and whether the crew has the hours.
@@ -110,12 +125,14 @@ One board for the scheduler: what is booked each day, what is coming, and whethe
 | Piece | How it works |
 |---|---|
 | **Computed, not copied** | The calendar is built from the work orders and PM schedules on every render. A job pushed out, pulled forward, re-planned or deferred anywhere in the app shows in its new place; the board also refreshes every minute |
-| **What shows** | Scheduled jobs on their date with their stage; planned work waiting for a date on its due date; work not yet planned, and PMs coming due with no work order, faintly on their due or target date as forecast. Late work is drawn on today |
+| **What shows** | Scheduled WCEs on their dates with their stage; PM and PdM work on its due date (generated or not); planned corrective work on its earliest workable day. Corrective work still in vetting or planning is listed below the board with no date. Late work is drawn on today |
+| **Corrective work has no due date** | Once planned, it goes on the first day all its parts are on site and every craft it needs has the hours free, after booked work and PMs, highest priority first. Parts not on site carry an expected date (set from the catalog lead time when the plan is committed; the storeroom can change it). A job waiting on a part with no date is listed, not drawn |
+| **Multi-day work** | Each plan step has a day (1 = the scheduled date). A WCE shows on each of its days with that day's hours, and moving any day moves the whole WCE. Support work is its own WCE on the job's JCN: a contractor's scaffold goes up on its own day before the main WCE and comes down after |
 | **Capacity** | From the technician roster: each tech's craft, shift hours and work days, less time off. Each day shows booked and forecast crew-hours against available hours per craft, and who is away |
 | **Drag to schedule** | Drag a scheduled job to another day to move it (logged on the work order as a reschedule, with an optional reason). Drag a ready job from the backlog onto a day, pick the technician (sorted by craft, with their free hours), and it moves to Execution. Every card also has a Move or Schedule button for keyboard and touch |
 | **Who schedules** | A site setting. An admin picks the roles (supervisor by default; admin always can). The same setting decides who sees Schedule on a work order |
 
-Target date for unplanned corrective work is the report date plus a priority target (P1 1 day, P2 7, P3 30, P4 90); PM work uses the PM due date. A job books all its hours on its scheduled day; jobs that span several days, and shift patterns that rotate over more than a week, are designed, not built. In the database, scheduling and rescheduling run as `SECURITY DEFINER` functions that check the site's scheduler roles, and a trigger refuses a date or assignee change from anyone else.
+Drag works with a mouse, a pen or a finger (on touch screens, drag by the grip so the board still scrolls), and anyone who can't schedule sees why. Capacity and placement are tested with a roster of 400 technicians. Links between WCEs (scaffold must be up before the seal job starts) and shift patterns that rotate over more than a week are designed, not built. In the database, scheduling and rescheduling run as `SECURITY DEFINER` functions that check the site's scheduler roles, and a trigger refuses a date or assignee change from anyone else.
 
 ---
 
@@ -173,7 +190,7 @@ Role and stage rules live in one pure module (`lib/workflow.ts`) used by both th
 
 Everything goes through a `Repository` interface (`lib/data/repository.ts`) with two implementations:
 
-- **Demo** (`DemoRepository`): two in-memory fictional sites. No setup; the top bar switches site and lets a visitor act as anyone who works there. The demo store applies the same per-site scoping the database enforces.
+- **Demo** (`DemoRepository`): two in-memory fictional sites. No setup; the top bar switches site and lets a visitor act as anyone who works there. The demo store applies the same per-site scoping the database enforces. Seed dates are relative and the store rebuilds each day, so the demo always shows the current week.
 - **Live** (`SupabaseRepository`): multi-tenant Postgres. Every query runs under the signed-in user's JWT, so RLS scopes all data. Atomic multi-row writes go through Postgres functions.
 
 The app runs in live mode when Supabase environment variables are present, and in demo mode otherwise.
@@ -272,7 +289,7 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
 - Tray fill tracking from cable outer diameters against each section's design fill
-- Scheduling: multi-day jobs, rotating shift patterns, and suggesting a week's schedule from priority, due dates and crew hours
+- Scheduling: links between WCEs (start after, finish before), rotating shift patterns, and suggesting a week's schedule for approval
 - Retrieval over OEM manuals as a fourth context layer
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner
 

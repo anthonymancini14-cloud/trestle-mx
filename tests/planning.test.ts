@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { liveNum } from "./seed-numbers";
 import { DemoRepository, resetDemoStore } from "@/lib/data/demo-repository";
 import { personId, SITE } from "@/lib/demo/seed";
 import { runDemoPlanningTurn } from "@/lib/planning/demo-planner";
@@ -11,19 +12,19 @@ async function collect(gen: AsyncGenerator<PlanningStreamEvent>) {
   return events;
 }
 
-const base = { woNumber: "WO-26-1031", title: "P-201B bearing", assetLabel: "BRP-HSP-P-201B", requiresShutdown: true };
+const base = { woNumber: liveNum(1031), title: "P-201B bearing", assetLabel: "BRP-HSP-P-201B", requiresShutdown: true };
 
 describe("demo planner", () => {
   it("drafts a plan on kickoff and finishes", async () => {
     const events = await collect(runDemoPlanningTurn({ ...base, history: [], currentPlan: null }, { delayMs: 0 }));
     const text = events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("");
-    expect(text).toContain("WO-26-1009");
+    expect(text).toContain(liveNum(1009));
     expect(events.find((e) => e.type === "plan")).toBeTruthy();
     expect(events.at(-1)).toEqual({ type: "done", mode: "demo", model: null });
   });
 
   it("revises the planner's current plan, keeping manual edits", async () => {
-    const edited: JobPlan = { ...DEMO_SCRIPTS["WO-26-1031"].plan, summary: "Planner's own wording" };
+    const edited: JobPlan = { ...DEMO_SCRIPTS[1031].plan, summary: "Planner's own wording" };
     const events = await collect(
       runDemoPlanningTurn(
         {
@@ -45,7 +46,7 @@ describe("demo planner", () => {
   });
 
   it("does not change the plan for free text it cannot handle", async () => {
-    const plan = DEMO_SCRIPTS["WO-26-1031"].plan;
+    const plan = DEMO_SCRIPTS[1031].plan;
     const events = await collect(
       runDemoPlanningTurn(
         { ...base, history: [{ role: "assistant", content: "x" }, { role: "user", content: "What's the weather?" }], currentPlan: plan },
@@ -61,14 +62,14 @@ describe("committing a plan (demo repository)", () => {
 
   it("writes steps and parts, reserves stock and moves to Scheduling", async () => {
     const repo = new DemoRepository(SITE.id);
-    const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === "WO-26-1031")!;
+    const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === liveNum(1031))!;
     const before = (await repo.listInventory()).find((i) => i.part.part_number === "MX-BRG-22220")!;
 
-    await repo.commitPlan(wo.id, DEMO_SCRIPTS["WO-26-1031"].plan, personId("Marcus"));
+    await repo.commitPlan(wo.id, DEMO_SCRIPTS[1031].plan, personId("Marcus"));
 
     const after = await repo.getWorkOrder(wo.id);
     expect(after?.stage).toBe("scheduling");
-    expect(after?.tasks).toHaveLength(DEMO_SCRIPTS["WO-26-1031"].plan.tasks.length);
+    expect(after?.tasks).toHaveLength(DEMO_SCRIPTS[1031].plan.tasks.length);
     expect(after?.parts.every((p) => p.status === "reserved")).toBe(true);
     expect(after?.estimated_hours).toBe(28.5);
     expect(after?.events[0].event_type).toBe("plan_committed");
@@ -79,8 +80,8 @@ describe("committing a plan (demo repository)", () => {
 
   it("leaves short parts as planned instead of over-reserving", async () => {
     const repo = new DemoRepository(SITE.id);
-    const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === "WO-26-1035")!;
-    await repo.commitPlan(wo.id, DEMO_SCRIPTS["WO-26-1035"].plan, personId("Marcus"));
+    const wo = (await repo.listWorkOrders({ stage: "planning" })).find((w) => w.wo_number === liveNum(1035))!;
+    await repo.commitPlan(wo.id, DEMO_SCRIPTS[1035].plan, personId("Marcus"));
     const after = await repo.getWorkOrder(wo.id);
     expect(after?.parts[0].status).toBe("planned"); // zero high-temp seals in stock
   });

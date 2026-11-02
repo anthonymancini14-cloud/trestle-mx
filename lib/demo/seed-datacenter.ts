@@ -10,7 +10,7 @@
  * each cable's route through the trays.
  */
 import { seedId } from "./ids";
-import { classId, ORG, type AssetDef, type WoDef } from "./seed";
+import { classId, LEAD_TIME_DAYS, ORG, type AssetDef, type WoDef } from "./seed";
 import type { AreaCode, Asset, CableSpec, InventoryRow, Part, Profile, Site } from "@/types/domain";
 
 export const DC_SITE: Site = {
@@ -21,6 +21,7 @@ export const DC_SITE: Site = {
   timezone: "America/Denver",
   vertical: "data_center",
   scheduler_roles: ["supervisor"],
+  jcn_block: 5000,
 };
 
 const AREA_DEFS: [string, string][] = [
@@ -49,6 +50,7 @@ export const DC_PROFILES: Profile[] = [
   { id: seedId("profile", 106), full_name: "Kai Nakamura", role: "technician", craft: "instrumentation", is_active: true },
   { id: seedId("profile", 107), full_name: "Rafael Ortiz", role: "technician", craft: "contractor", is_active: true },
   { id: seedId("profile", 108), full_name: "Dana Price", role: "storeroom", craft: null, is_active: true },
+  { id: seedId("profile", 109), full_name: "Priya Shah", role: "technician", craft: "process_controls", is_active: true },
 ];
 
 // FLOCs: CFD-<area>-<tag>. Cables use CBL-nnnn; tray sections CT-x. Labels on
@@ -340,6 +342,7 @@ export const DC_PARTS: Part[] = DC_PART_DEFS.map((d, i) => ({
   category: d.cat,
   unit: d.unit ?? "ea",
   unit_cost: d.cost,
+  lead_time_days: LEAD_TIME_DAYS[d.cat] ?? null,
   specs: d.specs ?? null,
 }));
 
@@ -397,6 +400,26 @@ export const DC_WO_DEFS: WoDef[] = [
     reportedBy: "Kai", assignedTo: "Mateo", createdDaysAgo: 40, estHours: 3, actualHours: 2.5,
     debrief: "EC fan module 3 failed on bearing. Replaced from stock and verified airflow. The other fans are at 41,000 run hours; recommend a fan replacement program by run hours.",
     parts: [{ pn: "MX-FAN-CRAH-EC", qty: 1, used: 1, status: "issued" }],
+  },
+  // A WCE that couldn't be closed: the humidity sensor needed a part with a
+  // long lead time and didn't affect cooling, so it was written up under its
+  // own JCN and this WCE signed off as deferred.
+  {
+    num: 2011,
+    wceOf: 2003,
+    title: "CRAH-02 return humidity sensor reading high",
+    description: "Found during the fan module job: return air humidity reads 12% RH above the handheld reference.",
+    floc: "CFD-DH1-CRAH-02", type: "corrective", priority: 3, stage: "closure", status: "closed",
+    reportedBy: "Mateo", assignedTo: "Kai", createdDaysAgo: 40, closedAfterDays: 1, estHours: 1, actualHours: 0.5,
+    deferredTo: 2012,
+    deferReason: "Sensor drifted beyond field calibration; replacement on order. Does not affect cooling capacity or safety.",
+  },
+  {
+    num: 2012,
+    title: "CRAH-02 return humidity sensor replacement",
+    description: "Deferred from the CRAH-02 fan module job: the return air humidity sensor is out of calibration and needs replacing. Humidity control on CRAH-02 is running from the space sensor in the meantime.",
+    floc: "CFD-DH1-CRAH-02", type: "corrective", priority: 4, stage: "planning",
+    reportedBy: "Kai", createdDaysAgo: 39,
   },
   // ---------------- Closure ----------------
   {

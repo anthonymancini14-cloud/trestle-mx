@@ -87,7 +87,20 @@ export interface Repository {
   addTimeOff(input: NewTimeOffInput, actorId: string): Promise<void>;
   updateShift(profileId: string, shiftHours: number, workDays: number[], actorId: string): Promise<void>;
 
+  /** Report a new discrepancy: a new JCN with its WCE -001. Returns the work order id. */
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;
+  /** Every WCE on a JCN, -001 first. */
+  listJcn(jcn: string): Promise<WorkOrderListItem[]>;
+  /** Another shop's WCE on an open JCN (next -NNN). Starts in Identification. */
+  addWce(jcn: string, input: NewWorkOrderInput, actorId: string): Promise<string>;
+  /**
+   * Close a WCE that can't be finished as deferred: the work is written up under
+   * a new JCN (its -001 starts in Vetting) and this WCE is signed off "Corrective
+   * action deferred, see JCN …". Returns the new work order's id.
+   */
+  deferWorkOrder(woId: string, reason: string, actorId: string): Promise<string>;
+  /** When a part that isn't on site is expected (storeroom or planner). */
+  setPartEta(woPartId: string, date: string | null, actorId: string): Promise<void>;
   moveStage(woId: string, to: WoStage, actorId: string, note?: string): Promise<void>;
   rejectWorkOrder(woId: string, actorId: string, note: string): Promise<void>;
   commitPlan(woId: string, plan: JobPlan, actorId: string): Promise<void>;

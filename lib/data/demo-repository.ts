@@ -1,13 +1,15 @@
 import "server-only";
-import { buildDataset, DEFAULT_DEMO_SITE_ID, type Dataset } from "@/lib/demo/dataset";
+import { buildDataset, DEFAULT_DEMO_SITE_ID, seedNumbers, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
-import { dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
+import { addDays, dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
+import { todayAt } from "@/lib/utils";
+import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
+import { latestEta } from "@/lib/schedule/calendar";
 import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
-  Craft,
   CrewMember,
   InventoryItem,
   PmScheduleRow,
@@ -25,15 +27,32 @@ import type {
  * survives hot reloads in development. On serverless hosting it resets when an
  * instance recycles, which is the intended behavior for a public demo.
  */
-const globalStore = globalThis as unknown as { __trestleDemo?: Dataset };
+const globalStore = globalThis as unknown as { __trestleDemo?: Dataset; __trestleDemoDay?: string };
+
+/**
+ * The demo's day. Seed dates are relative to when the store is built, so the
+ * store is rebuilt when the day turns over: a visitor a month from now sees
+ * this week's work, not last month's. (Changes made in the demo reset then too.)
+ */
+const demoDay = () => todayAt("America/Los_Angeles");
 
 function store(): Dataset {
-  globalStore.__trestleDemo ??= buildDataset();
+  const day = demoDay();
+  if (!globalStore.__trestleDemo || globalStore.__trestleDemoDay !== day) {
+    globalStore.__trestleDemo = buildDataset();
+    globalStore.__trestleDemoDay = day;
+  }
   return globalStore.__trestleDemo;
+}
+
+/** Today's WCE number of each seeded work order, by seed key (for scripted Planning Mode). */
+export function demoSeedNumbers(): Map<number, string> {
+  return seedNumbers(store());
 }
 
 export function resetDemoStore(): void {
   globalStore.__trestleDemo = buildDataset();
+  globalStore.__trestleDemoDay = demoDay();
 }
 
 const nowIso = () => new Date().toISOString();
@@ -54,6 +73,12 @@ function requireWo(db: Dataset, id: string, siteId: string): WorkOrder {
   const wo = db.workOrders.find((w) => w.id === id && w.site_id === siteId);
   if (!wo) throw new Error("Work order not found");
   return wo;
+}
+
+/** A new JCN for the site, today in the site's time zone, from the site's block. */
+function newJcn(db: Dataset, siteId: string): string {
+  const site = db.sites.find((x) => x.id === siteId)!;
+  return nextJcn(db.workOrders.filter((w) => w.site_id === siteId).map((w) => w.jcn), todayAt(site.timezone), site.jcn_block);
 }
 
 function logEvent(db: Dataset, event: Omit<WoEvent, "id" | "created_at">) {
@@ -191,16 +216,22 @@ export class DemoRepository implements Repository {
       .sort((a, b) => a.part.part_number.localeCompare(b.part.part_number));
   }
 
-  async createWorkOrder(input: NewWorkOrderInput, actorId: string) {
+  async createWorkOrder(input: NewWorkOrderInput, actorId: string, opts: { jcn?: string; deferredFrom?: string; stage?: WoStage } = {}) {
     const db = store();
-    const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+    const jcn = opts.jcn ?? newJcn(db, this.siteId);
+    const seq = nextWceSeq(db.workOrders.filter((w) => w.site_id === this.siteId && w.jcn === jcn).map((w) => w.wce_seq));
     const id = newId();
+    const stage = opts.stage ?? "identification";
     db.workOrders.push({
       id,
       site_id: this.siteId,
-      wo_number: `WO-26-${next}`,
+      wo_number: wceNumber(jcn, seq),
+      jcn,
+      wce_seq: seq,
+      deferred_to_jcn: null,
+      deferred_from_wo_id: opts.deferredFrom ?? null,
       ...input,
-      stage: "identification",
+      stage,
       status: "open",
       reported_by: actorId,
       planner_id: null,
@@ -215,8 +246,71 @@ export class DemoRepository implements Repository {
       updated_at: nowIso(),
       closed_at: null,
     });
-    logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: "identification", note: null, actor_id: actorId });
+    logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: stage, note: seq > 1 ? `WCE ${String(seq).padStart(3, "0")} added to JCN ${jcn}` : null, actor_id: actorId });
     return id;
+  }
+
+  async listJcn(jcn: string): Promise<WorkOrderListItem[]> {
+    const db = store();
+    return db.workOrders
+      .filter((w) => w.site_id === this.siteId && w.jcn === jcn)
+      .sort((a, b) => a.wce_seq - b.wce_seq)
+      .map((w) => toListItem(db, w));
+  }
+
+  async addWce(jcn: string, input: NewWorkOrderInput, actorId: string) {
+    const db = store();
+    const primary = db.workOrders.find((w) => w.site_id === this.siteId && w.jcn === jcn && w.wce_seq === 1);
+    if (!primary) throw new Error("JCN not found");
+    if (primary.status !== "open") throw new Error("This JCN is closed");
+    return this.createWorkOrder(input, actorId, { jcn });
+  }
+
+  async deferWorkOrder(woId: string, reason: string, actorId: string): Promise<string> {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("Only open work can be deferred");
+    // The remaining work becomes its own discrepancy under a new JCN, already reported.
+    const newId_ = await this.createWorkOrder(
+      {
+        title: wo.title,
+        description: `Deferred from WCE ${wo.wo_number}: ${reason}\n\n${wo.description}`,
+        asset_id: wo.asset_id,
+        wo_type: wo.wo_type === "preventive" ? "corrective" : wo.wo_type,
+        priority: wo.priority,
+        requires_shutdown: wo.requires_shutdown,
+      },
+      actorId,
+      { deferredFrom: wo.id, stage: "vetting" },
+    );
+    const carried = db.workOrders.find((w) => w.id === newId_)!;
+    this.releaseParts(db, woId);
+    const note = deferralNote(carried.jcn, reason);
+    wo.status = "closed";
+    wo.debrief = note;
+    wo.deferred_to_jcn = carried.jcn;
+    wo.closed_at = nowIso();
+    wo.updated_at = nowIso();
+    logEvent(db, { wo_id: woId, event_type: "closed", from_stage: wo.stage, to_stage: null, note, actor_id: actorId });
+    return newId_;
+  }
+
+  /** Give back stock held for a work order that won't use it. */
+  private releaseParts(db: Dataset, woId: string) {
+    for (const p of db.woParts.filter((x) => x.wo_id === woId && (x.status === "reserved" || x.status === "kitted"))) {
+      const row = this.stock(db, p.part_id);
+      if (row) row.reserved = Math.max(row.reserved - p.qty_required, 0);
+      p.status = "planned";
+    }
+  }
+
+  async setPartEta(woPartId: string, date: string | null, _actorId: string) {
+    const db = store();
+    const line = db.woParts.find((p) => p.id === woPartId);
+    if (!line) throw new Error("Part line not found");
+    requireWo(db, line.wo_id, this.siteId);
+    if (line.status !== "planned") throw new Error("That part is already on site");
+    line.expected_on = date;
   }
 
   async moveStage(woId: string, to: WoStage, actorId: string, note?: string) {
@@ -251,6 +345,7 @@ export class DemoRepository implements Repository {
         id: newId(),
         wo_id: woId,
         seq: t.seq,
+        day: t.day ?? 1,
         description: t.description,
         craft: t.craft,
         crew_size: t.crew_size,
@@ -274,6 +369,8 @@ export class DemoRepository implements Repository {
         qty_required: p.qty,
         qty_used: 0,
         status: canReserve ? "reserved" : "planned",
+        // Short parts get an expected date from the catalog lead time; the storeroom can change it.
+        expected_on: canReserve || !part?.lead_time_days ? null : addDays(todayAt("UTC"), part.lead_time_days),
       });
     }
 
@@ -326,6 +423,9 @@ export class DemoRepository implements Repository {
   async closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string) {
     const db = store();
     const wo = requireWo(db, woId, this.siteId);
+    if (wo.wce_seq === 1 && db.workOrders.some((w) => w.site_id === this.siteId && w.jcn === wo.jcn && w.id !== wo.id && w.status === "open")) {
+      throw new Error("WCE -001 closes last: close the other WCEs on this JCN first");
+    }
     wo.status = "closed";
     wo.actual_hours = actualHours;
     wo.debrief = debrief;
@@ -360,11 +460,17 @@ export class DemoRepository implements Repository {
       .map((w) => {
         const item = toListItem(db, w);
         const assignee = w.assigned_to ? db.profiles.find((p) => p.id === w.assigned_to) : undefined;
-        const craft_hours: Partial<Record<Craft, number>> = {};
-        for (const t of db.tasks.filter((t) => t.wo_id === w.id)) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        const day_hours: CalendarWorkOrder["day_hours"] = {};
+        for (const t of db.tasks.filter((t) => t.wo_id === w.id && !t.is_complete)) {
+          const d = (day_hours[t.day] ??= {});
+          d[t.craft] = (d[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        }
+        const short = db.woParts.filter((p) => p.wo_id === w.id && p.status === "planned");
         return {
           id: w.id,
           wo_number: w.wo_number,
+          jcn: w.jcn,
+          wce_seq: w.wce_seq,
           title: w.title,
           stage: w.stage,
           priority: w.priority,
@@ -377,7 +483,9 @@ export class DemoRepository implements Repository {
           created_at: w.created_at,
           asset: item.asset,
           assignee: assignee ? { id: assignee.id, full_name: assignee.full_name, craft: assignee.craft } : null,
-          craft_hours,
+          day_hours,
+          parts_short: short.length,
+          parts_ready_on: latestEta(short),
         };
       });
   }
@@ -446,12 +554,16 @@ export class DemoRepository implements Repository {
       const state = dueState(row.next_due_on, asOf, PM_LEAD_DAYS);
       if (state !== "overdue" && state !== "due") continue;
       const plan = pmWorkPlan(row.task, row.asset.floc);
-      const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+      const jcn = newJcn(db, this.siteId);
       const id = newId();
       db.workOrders.push({
         id,
         site_id: this.siteId,
-        wo_number: `WO-26-${next}`,
+        wo_number: wceNumber(jcn, 1),
+        jcn,
+        wce_seq: 1,
+        deferred_to_jcn: null,
+        deferred_from_wo_id: null,
         title: `PM ${row.task.code}: ${row.task.title}`,
         description: `Preventive maintenance from the PM program, due ${row.next_due_on}. Addresses failure modes ${row.task.failure_mode_codes.join(", ")}.`,
         asset_id: row.asset_id,

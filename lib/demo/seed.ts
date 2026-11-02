@@ -39,6 +39,7 @@ export const SITE: Site = {
   timezone: "America/Los_Angeles",
   vertical: "industrial_utility",
   scheduler_roles: ["supervisor"],
+  jcn_block: 1000,
 };
 
 const AREA_DEFS: [string, string][] = [
@@ -82,6 +83,8 @@ export const PROFILES: Profile[] = [
   { id: seedId("profile", 7), full_name: "Teresa Molina", role: "storeroom", craft: null, is_active: true },
   { id: seedId("profile", 8), full_name: "Chris Novak", role: "admin", craft: null, is_active: true },
   { id: seedId("profile", 9), full_name: "Devon Hale", role: "technician", craft: "mechanical", is_active: true },
+  { id: seedId("profile", 10), full_name: "Nate Ellis", role: "technician", craft: "process_controls", is_active: true },
+  { id: seedId("profile", 11), full_name: "Luis Ortega", role: "technician", craft: "contractor", is_active: true },
 ];
 
 export const personId = (name: string) => {
@@ -210,6 +213,12 @@ const PART_DEFS: PartDef[] = [
   { pn: "MX-DA-VENT-KIT", desc: "Deaerator vent valve rebuild kit", cat: "Valves", cost: 226, bin: "E-02-04", onHand: 1, min: 0, max: 1 },
 ];
 
+/** Typical order-to-site days by storeroom category (demo values). */
+export const LEAD_TIME_DAYS: Record<string, number> = {
+  Alignment: 5, Bearings: 5, Belts: 3, Cable: 5, "Chemical feed": 10, Consumables: 2, Couplings: 7, Electrical: 10,
+  "Fiber connectivity": 5, Filters: 3, Gaskets: 5, HVAC: 10, Instrumentation: 10, Lubricants: 2, "Pathway hardware": 7, Seals: 7, Valves: 21,
+};
+
 export const PARTS: Part[] = PART_DEFS.map((d, i) => ({
   id: seedId("part", i + 1),
   org_id: ORG.id,
@@ -220,6 +229,7 @@ export const PARTS: Part[] = PART_DEFS.map((d, i) => ({
   category: d.cat,
   unit: d.unit ?? "ea",
   unit_cost: d.cost,
+  lead_time_days: LEAD_TIME_DAYS[d.cat] ?? null,
   specs: null,
 }));
 
@@ -251,6 +261,8 @@ export interface TaskDef {
   safety?: string;
   accept?: string;
   done?: boolean;
+  /** Day of the WCE, 1 = scheduled date. */
+  day?: number;
 }
 
 export interface WoPartDef {
@@ -259,10 +271,22 @@ export interface WoPartDef {
   qty: number;
   used?: number;
   status?: WoPartStatus;
+  /** Not on site yet: expected in this many days. */
+  etaInDays?: number;
 }
 
 export interface WoDef {
+  /** Seed key. The real number is a JCN-WCE built from the dates (lib/jcn.ts). */
   num: number;
+  /** This is another shop's WCE on the JCN of seed `wceOf` (its -001). */
+  wceOf?: number;
+  /** Closed as deferred: the work was written up under the JCN of seed `deferredTo`. */
+  deferredTo?: number;
+  deferReason?: string;
+  /** Scheduled on the assignee's last work day before seed `startsBefore` starts (scaffold up first). */
+  startsBefore?: number;
+  /** Scheduled the same day seed `startsWith` starts (support crafts on the main job). */
+  startsWith?: number;
   title: string;
   description: string;
   floc: string | null;
@@ -425,7 +449,7 @@ export const WO_DEFS: WoDef[] = [
       { desc: "Replace coupling element, check alignment and correct if over 0.003 in offset", craft: "mechanical", crew: 1, hours: 2 },
       { desc: "Return to service, observe one full backwash", craft: "operations", hours: 0.5 },
     ],
-    parts: [{ pn: "MX-CPL-ELAST-8", qty: 1, status: "reserved" }],
+    parts: [{ pn: "MX-CPL-ELAST-8", qty: 1, status: "planned", etaInDays: 4 }],
   },
   {
     num: 1029,
@@ -514,11 +538,55 @@ export const WO_DEFS: WoDef[] = [
   },
 
   // ---------------- Identification ----------------
+  // One discrepancy, three shops: the mechanical WCE (-001) owns the fix and
+  // runs two days; a contractor scaffolds the day before and strikes it after;
+  // electrical locks out and uncouples the motor. Each WCE runs its own lifecycle.
   {
     num: 1041,
-    title: "Cooling tower gearbox oil leak at output seal",
-    description: "Oil film on fan deck around gearbox output shaft. Sight glass still in range.",
-    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "identification",
+    title: "Cooling tower fan F-601 gearbox output seal replacement",
+    description: "Oil film on fan deck around the gearbox output shaft, sight glass dropping about 1/4 in a week. Replace the output shaft seal before the gearbox runs low.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution", shutdown: true,
+    reportedBy: "Jordan", assignedTo: "Jordan", createdDaysAgo: 6, scheduledInDays: 5,
+    planSummary: "Two-day seal job on the fan deck: drain, pull the fan hub, replace the output seal, reassemble and run. Scaffold goes up the day before (WCE -002); electrical isolates and uncouples the motor (WCE -003).",
+    tasks: [
+      { desc: "Confirm scaffold tagged green and motor locked out (WCE -003); drain gearbox oil", craft: "mechanical", crew: 2, hours: 1, day: 1 },
+      { desc: "Remove fan hub and blades to the deck; pull output shaft seal, inspect shaft for grooving", craft: "mechanical", crew: 2, hours: 4, day: 1 },
+      { desc: "Install new seal, refit hub and set blade pitch; refill gearbox", craft: "mechanical", crew: 2, hours: 3, day: 2, accept: "Blade pitch within 0.5° of each other; oil at the full mark." },
+      { desc: "Run test with electrical; check for leaks and vibration", craft: "mechanical", hours: 1, day: 2, accept: "No seal leak after 30 min; overall vibration under 0.3 in/s." },
+    ],
+    parts: [{ pn: "MX-GBX-SEAL-CT14", qty: 1, status: "planned", etaInDays: 2 }],
+  },
+  {
+    num: 1046,
+    wceOf: 1041,
+    title: "Scaffold for F-601 gearbox access: erect and strike",
+    description: "Tube-and-clamp scaffold on the fan deck to reach the gearbox. Erect on the last work day before the seal job; strike on the first work day after the run test.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution",
+    reportedBy: "Marcus", assignedTo: "Luis", createdDaysAgo: 5, scheduledInDays: 2, startsBefore: 1041,
+    planSummary: "Erect, inspect and tag the scaffold before the seal job starts; strike it the first work day after the mechanical WCE's run test. It stands idle in between.",
+    tasks: [
+      { desc: "Erect scaffold at the gearbox access; competent person inspects and tags green", craft: "contractor", crew: 2, hours: 4, day: 1, accept: "Scaffold tag green and signed." },
+      { desc: "Strike scaffold and clear the fan deck", craft: "contractor", crew: 2, hours: 3, day: 4 },
+    ],
+  },
+  {
+    num: 1047,
+    wceOf: 1041,
+    title: "F-601 motor lockout, uncouple and insulation test",
+    description: "Electrical support for the gearbox seal job: isolate and uncouple the 40 hp fan motor, then megger and recouple before the run test.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution",
+    reportedBy: "Marcus", assignedTo: "Alex", createdDaysAgo: 5, scheduledInDays: 5, startsWith: 1041,
+    planSummary: "Lock out at MCC-702, uncouple on day 1; insulation test and recouple on day 2 before the run test.",
+    tasks: [
+      { desc: "Lock out the fan motor at MCC-702 and verify zero energy; uncouple", craft: "electrical", hours: 1.5, day: 1 },
+      { desc: "Insulation resistance test, recouple and release for the run test", craft: "electrical", hours: 1, day: 2, accept: "Insulation resistance over 100 MΩ at 500 V." },
+    ],
+  },
+  {
+    num: 1048,
+    title: "Cooling tower basin strainer screen torn",
+    description: "Operator rounds found a torn section on the basin outlet strainer screen. Debris getting to the pump suction.",
+    floc: "BRP-CTW-P-602", type: "corrective", priority: 3, stage: "identification",
     reportedBy: "Jordan", createdDaysAgo: 0,
   },
   {

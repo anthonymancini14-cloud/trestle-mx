@@ -10,7 +10,7 @@ import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canPm, canReschedule, canScheduleAt, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
+import { assertCan, canAddWce, canDefer, canPm, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
 import { ROLES, type WorkOrderDetail } from "@/types/domain";
 
 export type ActionResult = { ok: true } | { ok: false, error: string };
@@ -100,9 +100,11 @@ export async function closeWorkOrder(woId: string, hours: number, debrief: strin
   if (!parsed.success) {
     return { ok: false, error: "Enter actual hours and a debrief of at least a sentence: it feeds the next plan." } satisfies ActionResult;
   }
-  return withWorkOrder(woId, "close", ({ repo, profile }) =>
-    repo.closeWorkOrder(woId, parsed.data.hours, parsed.data.debrief, profile.id),
-  );
+  return withWorkOrder(woId, "close", async ({ repo, profile, wo }) => {
+    const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn));
+    if (blocker) throw new WorkflowError(blocker);
+    await repo.closeWorkOrder(woId, parsed.data.hours, parsed.data.debrief, profile.id);
+  });
 }
 
 const newWoSchema = z.object({
@@ -114,8 +116,8 @@ const newWoSchema = z.object({
   requires_shutdown: z.boolean(),
 });
 
-export async function createWorkOrder(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
-  const parsed = newWoSchema.safeParse({
+function parseNewWo(form: FormData) {
+  return newWoSchema.safeParse({
     title: form.get("title"),
     description: form.get("description"),
     asset_id: form.get("asset_id") || undefined,
@@ -123,6 +125,11 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
     priority: form.get("priority"),
     requires_shutdown: form.get("requires_shutdown") === "on",
   });
+}
+
+/** Report a discrepancy: a new JCN, written up as WCE -001. */
+export async function createWorkOrder(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  const parsed = parseNewWo(form);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the form." };
   const { repo, profile } = await getViewer();
   const id = await repo.createWorkOrder(
@@ -131,6 +138,58 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
   );
   revalidatePath("/", "layout");
   redirect(`/work-orders/${id}`);
+}
+
+/** Write up another shop's WCE on an open JCN (next -NNN). */
+export async function addWce(jcn: string, _prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  const parsed = parseNewWo(form);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the form." };
+  const { repo, profile } = await getViewer();
+  const job = await repo.listJcn(jcn);
+  const primary = job.find((w) => w.wce_seq === 1);
+  if (!primary) return { ok: false, error: "That JCN isn't at this site." };
+  if (!canAddWce(profile.role, primary)) return { ok: false, error: primary.status === "open" ? "Your role can't write up WCEs." : "This JCN is closed. Report a new discrepancy instead." };
+  const id = await repo.addWce(jcn, { ...parsed.data, priority: parsed.data.priority as 1 | 2 | 3 | 4, asset_id: parsed.data.asset_id ?? primary.asset_id }, profile.id);
+  revalidatePath("/", "layout");
+  redirect(`/work-orders/${id}`);
+}
+
+/**
+ * Close a WCE that can't be finished as deferred. The work is written up under a
+ * new JCN and this WCE is signed off "Corrective action deferred, see JCN …".
+ */
+export async function deferWorkOrder(woId: string, reason: string): Promise<ActionResult & { newId?: string }> {
+  const why = reason.trim();
+  if (why.length < 10) return { ok: false, error: "Say why the work is deferred and what it doesn't affect (safety, crew, function)." };
+  try {
+    const { repo, profile } = await getViewer();
+    const wo = await repo.getWorkOrder(woId);
+    if (!wo) return { ok: false, error: "Work order not found." };
+    if (!canDefer(profile.role, wo)) return { ok: false, error: "Deferring needs a supervisor, on an open WCE in Scheduling, Execution or Closure." };
+    const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn));
+    if (blocker) return { ok: false, error: blocker };
+    const newId = await repo.deferWorkOrder(woId, why, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true, newId };
+  } catch (error) {
+    console.error("Defer WCE failed", error);
+    return { ok: false, error: "Something went wrong deferring that WCE." };
+  }
+}
+
+/** Storeroom, planner or admin: when a part that isn't on site is expected. */
+export async function setPartEta(woPartId: string, date: string | null): Promise<ActionResult> {
+  if (date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: "Pick a date." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (!["storeroom", "planner", "admin"].includes(profile.role)) return { ok: false, error: "The storeroom or a planner sets expected dates." };
+    await repo.setPartEta(woPartId, date, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Set part ETA failed", error);
+    return { ok: false, error: "Something went wrong saving the date." };
+  }
 }
 
 // ---------------------------------------------------------------- PM program

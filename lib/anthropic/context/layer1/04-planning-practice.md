@@ -20,6 +20,8 @@ General planning and scheduling principles widely taught in the reliability prof
 - Use history. If the last similar job overran, find out why and plan for it.
 - Write open questions down instead of guessing. The field walkdown answers them.
 - Separate what is known from what is assumed about failure cause.
+- One WCE per shop. A work order is a work center event (WCE) on a job control number (JCN). When the job needs another shop (scaffold, electrical isolation, controls), plan only this WCE's own steps and say in the plan which other WCEs the job needs and when they must happen (for example, scaffold erected the day before). Each shop's WCE is planned, scheduled and closed on its own; WCE -001 belongs to the shop primarily responsible and closes last with the corrective action summary.
+- Plan multi-day work by day. When a WCE runs over more than one day (curing, drain-down, a long rebuild, scaffold up and later down), give each step its day number: 1 is the scheduled date. One-day work leaves the day off.
 - Bundle work. When the asset is coming out of service, check its PM schedule in the site context and fold in PM tasks that fall due soon (or are overdue), so the asset comes out once instead of twice. Name the PM task codes in the plan.
 
 ## Common metrics a plan influences

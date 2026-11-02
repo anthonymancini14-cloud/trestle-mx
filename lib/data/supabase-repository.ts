@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import { PM_LEAD_DAYS } from "@/lib/pm/program";
+import { latestEta } from "@/lib/schedule/calendar";
 import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AreaCode,
@@ -42,8 +43,9 @@ const WO_LIST_SELECT =
 
 /** Open work for the scheduling calendar, with the plan's craft hours. Typed as string so rows cast to our shape. */
 const CALENDAR_SELECT: string =
-  "id, wo_number, title, stage, priority, wo_type, requires_shutdown, scheduled_date, assigned_to, estimated_hours, pm_schedule_id, created_at, " +
-  "asset:assets(id, floc, name, criticality), assignee:profiles!work_orders_assigned_to_fkey(id, full_name, craft), tasks:wo_tasks(craft, est_hours, crew_size)";
+  "id, wo_number, jcn, wce_seq, title, stage, priority, wo_type, requires_shutdown, scheduled_date, assigned_to, estimated_hours, pm_schedule_id, created_at, " +
+  "asset:assets(id, floc, name, criticality), assignee:profiles!work_orders_assigned_to_fkey(id, full_name, craft), " +
+  "tasks:wo_tasks(day, craft, est_hours, crew_size, is_complete), parts:wo_parts(status, expected_on)";
 
 type WoRow = WorkOrder & {
   asset: WorkOrderListItem["asset"];
@@ -252,6 +254,30 @@ export class SupabaseRepository implements Repository {
     return row.id;
   }
 
+  async listJcn(jcn: string) {
+    const rows = unwrap<WoRow[]>(await this.db.from("work_orders").select(WO_LIST_SELECT).eq("site_id", this.siteId).eq("jcn", jcn).order("wce_seq"));
+    return rows.map(toListItem);
+  }
+
+  async addWce(jcn: string, input: NewWorkOrderInput, actorId: string) {
+    // The database trigger gives it the next WCE number and refuses a closed JCN.
+    const row = unwrap<{ id: string; wce_seq: number }>(
+      await this.db.from("work_orders").insert({ ...input, jcn, site_id: this.siteId, reported_by: actorId }).select("id, wce_seq").single(),
+    );
+    await this.logEvent(row.id, { event_type: "created", from_stage: null, to_stage: "identification", note: `WCE ${String(row.wce_seq).padStart(3, "0")} added to JCN ${jcn}` }, actorId);
+    return row.id;
+  }
+
+  async deferWorkOrder(woId: string, reason: string, _actorId: string) {
+    const { data, error } = await this.db.rpc("defer_work_order", { p_wo_id: woId, p_reason: reason });
+    if (error) throw new Error(error.message);
+    return data as string;
+  }
+
+  async setPartEta(woPartId: string, date: string | null, _actorId: string) {
+    unwrapVoid(await this.db.from("wo_parts").update({ expected_on: date }).eq("id", woPartId).eq("status", "planned"));
+  }
+
   async moveStage(woId: string, to: WoStage, actorId: string, note?: string) {
     const from = await this.currentStage(woId);
     unwrapVoid(await this.db.from("work_orders").update({ stage: to }).eq("id", woId));
@@ -299,9 +325,10 @@ export class SupabaseRepository implements Repository {
   }
 
   async listCalendarWork(): Promise<CalendarWorkOrder[]> {
-    type Row = Omit<CalendarWorkOrder, "craft_hours" | "assignee"> & {
+    type Row = Omit<CalendarWorkOrder, "day_hours" | "assignee" | "parts_short" | "parts_ready_on"> & {
       assignee: { id: string; full_name: string; craft: Craft | null } | null;
-      tasks: { craft: Craft; est_hours: number; crew_size: number }[];
+      tasks: { day: number; craft: Craft; est_hours: number; crew_size: number; is_complete: boolean }[];
+      parts: { status: string; expected_on: string | null }[];
     };
     const rows = unwrap<Row[]>(
       await this.db
@@ -312,10 +339,21 @@ export class SupabaseRepository implements Repository {
         .neq("stage", "closure")
         .returns<Row[]>(),
     );
-    return rows.map(({ tasks, ...w }) => {
-      const craft_hours: Partial<Record<Craft, number>> = {};
-      for (const t of tasks ?? []) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + Number(t.est_hours) * t.crew_size;
-      return { ...w, estimated_hours: w.estimated_hours === null ? null : Number(w.estimated_hours), craft_hours };
+    return rows.map(({ tasks, parts, ...w }) => {
+      const day_hours: CalendarWorkOrder["day_hours"] = {};
+      for (const t of tasks ?? []) {
+        if (t.is_complete) continue;
+        const d = (day_hours[t.day] ??= {});
+        d[t.craft] = (d[t.craft] ?? 0) + Number(t.est_hours) * t.crew_size;
+      }
+      const short = (parts ?? []).filter((p) => p.status === "planned");
+      return {
+        ...w,
+        estimated_hours: w.estimated_hours === null ? null : Number(w.estimated_hours),
+        day_hours,
+        parts_short: short.length,
+        parts_ready_on: latestEta(short),
+      };
     });
   }
 

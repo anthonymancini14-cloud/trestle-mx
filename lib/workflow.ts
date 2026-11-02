@@ -105,3 +105,34 @@ export function canScheduleAt(role: Role, opts: WorkflowOptions): boolean {
 export function canReschedule(role: Role, wo: Pick<WorkOrder, "stage" | "status" | "scheduled_date">, opts: WorkflowOptions): boolean {
   return canScheduleAt(role, opts) && wo.status === "open" && wo.stage === "execution" && wo.scheduled_date !== null;
 }
+
+// ---------------------------------------------------------------- JCNs and WCEs
+
+/**
+ * Every WCE runs the full lifecycle on its own (TMX-019). These rules sit on
+ * top: who adds a WCE to a job, who defers one, and the -001 close-out order.
+ */
+export const WCE_RULES = {
+  /** Write up another shop's WCE on an open JCN: anyone who can report a discrepancy. */
+  add: ["technician", "planner", "supervisor", "admin", "gatekeeper"],
+  /** Close a WCE as deferred and carry the work under a new JCN. */
+  defer: ["supervisor", "admin"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export const DEFERRABLE_STAGES: readonly WoStage[] = ["scheduling", "execution", "closure"];
+
+export function canAddWce(role: Role, primary: Pick<WorkOrder, "status">): boolean {
+  return primary.status === "open" && (WCE_RULES.add as readonly Role[]).includes(role);
+}
+
+export function canDefer(role: Role, wo: Pick<WorkOrder, "stage" | "status">): boolean {
+  return wo.status === "open" && DEFERRABLE_STAGES.includes(wo.stage) && (WCE_RULES.defer as readonly Role[]).includes(role);
+}
+
+/** Why WCE -001 can't close yet (other WCEs on the JCN still open), or null. */
+export function primaryCloseBlocker(wo: Pick<WorkOrder, "id" | "wce_seq">, siblings: Pick<WorkOrder, "id" | "wo_number" | "status">[]): string | null {
+  if (wo.wce_seq !== 1) return null;
+  const open = siblings.filter((s) => s.id !== wo.id && s.status === "open");
+  if (open.length === 0) return null;
+  return `WCE -001 closes last, with the corrective action summary. Still open: ${open.map((s) => s.wo_number).join(", ")}.`;
+}

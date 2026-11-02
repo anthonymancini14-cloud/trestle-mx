@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 import { CRAFTS, planLaborHours, type JobPlan, type JobPlanTask } from "@/lib/planning/plan-schema";
 import { cn, currency, formatHours } from "@/lib/utils";
+import { CRAFT_LABELS } from "@/types/domain";
 
 export interface CatalogItem {
   partNumber: string;
@@ -156,14 +157,29 @@ export function PlanEditor({
                         aria-label="Craft"
                         value={t.craft}
                         onChange={(e) => updateTask(t.seq, { craft: e.target.value as JobPlanTask["craft"] })}
-                        className="h-7 rounded-[2px] border border-line-strong bg-panel px-1.5 capitalize text-tx-2"
+                        className="h-7 rounded-[2px] border border-line-strong bg-panel px-1.5 text-tx-2"
                       >
                         {CRAFTS.map((c) => (
                           <option key={c} value={c}>
-                            {c}
+                            {CRAFT_LABELS[c]}
                           </option>
                         ))}
                       </select>
+                      <label className="inline-flex items-center gap-1 text-tx-3" title="Day of the WCE this step happens on (1 = the scheduled date)">
+                        Day
+                        <input
+                          type="number"
+                          aria-label="Day"
+                          min={1}
+                          max={14}
+                          value={t.day ?? 1}
+                          onChange={(e) => {
+                            const day = Math.min(14, Math.max(1, Math.round(Number(e.target.value) || 1)));
+                            updateTask(t.seq, { day: day === 1 ? undefined : day });
+                          }}
+                          className="h-7 w-11 rounded-[2px] border border-line-strong bg-panel px-1 text-center font-mono text-tx-2"
+                        />
+                      </label>
                       <NumberField label="Crew" value={t.crew_size} step={1} min={1} onChange={(v) => updateTask(t.seq, { crew_size: Math.max(1, Math.round(v)) })} />
                       <span className="text-tx-3">×</span>
                       <NumberField label="Hours" value={t.est_hours} step={0.5} min={0} onChange={(v) => updateTask(t.seq, { est_hours: v })} suffix="h" />

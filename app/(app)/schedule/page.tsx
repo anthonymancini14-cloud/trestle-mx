@@ -47,8 +47,8 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
         <div>
           <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Schedule</h1>
           <p className="max-w-3xl text-sm text-tx-3">
-            Scheduled jobs, planned work waiting for a date, and forecast work on its due date, against the hours the crew has each day. It
-            reads the work orders directly, so a job moved anywhere shows here. Schedulers at {site.name}: {who}.
+            Every WCE against the hours the crew has each day. Scheduled work sits on its dates; PMs on their due date; planned corrective work on
+            the first day its parts are on site and the crew is free. It reads the work orders directly, so a job moved anywhere shows here. Schedulers at {site.name}: {who}.
           </p>
         </div>
         <nav aria-label="Weeks" className="flex flex-wrap items-center gap-1">
@@ -77,7 +77,7 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
       <section aria-label="Schedule summary" className="grid grid-cols-2 gap-px overflow-hidden rounded-[3px] border border-line bg-line sm:grid-cols-3 lg:grid-cols-5 [&>*:last-child]:col-span-2 sm:[&>*:last-child]:col-span-1">
         <QualityStat label="Crew hours available" value={`${Math.round(available)} h`} detail={`${crew.filter((c) => c.shift).length} technicians, less time off`} />
         <QualityStat label="Booked" value={`${Math.round(booked)} h`} detail={`${loadPct}% of available`} tone={loadPct > 100 ? "bad" : loadPct > 85 ? "warn" : undefined} />
-        <QualityStat label="Forecast" value={`${Math.round(forecast)} h`} detail="Unscheduled work due in this range" />
+        <QualityStat label="Forecast" value={`${Math.round(forecast)} h`} detail="Unscheduled PMs and ready work in this range" />
         <QualityStat label="Ready to schedule" value={String(calendar.backlog.length)} detail="Planned, waiting for a date" tone={calendar.backlog.length ? "warn" : "good"} />
         <QualityStat label="Late" value={String(late)} detail="Past its date and still open; shown on today" tone={late ? "bad" : "good"} />
       </section>
@@ -86,6 +86,9 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
         calendar={calendar}
         canMove={canMove}
         crew={crew.filter((c) => c.shift).map((c) => ({ id: c.id, name: c.full_name, craft: c.craft }))}
+        viewerRole={ROLE_LABELS[profile.role].toLowerCase()}
+        schedulers={who}
+        demo={repo.mode === "demo"}
       />
 
       <RosterPanel crew={crew} canEdit={canMove} today={today} />

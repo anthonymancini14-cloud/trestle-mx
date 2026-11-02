@@ -150,6 +150,7 @@ export function pmWorkPlan(task: PmTask, assetFloc: string): JobPlanLike {
   if (task.requires_shutdown) {
     steps.push({
       seq: 10,
+      day: 1,
       description: `Coordinate with operations; isolate and verify ${assetFloc} per the site energy control procedure`,
       craft: "operations",
       crew_size: 1,
@@ -160,6 +161,7 @@ export function pmWorkPlan(task: PmTask, assetFloc: string): JobPlanLike {
   }
   steps.push({
     seq: steps.length ? 20 : 10,
+    day: 1,
     description: task.title,
     craft: task.craft,
     crew_size: task.crew_size,
@@ -170,6 +172,7 @@ export function pmWorkPlan(task: PmTask, assetFloc: string): JobPlanLike {
   if (task.requires_shutdown) {
     steps.push({
       seq: 30,
+      day: 1,
       description: `Return ${assetFloc} to service and confirm with operations`,
       craft: "operations",
       crew_size: 1,

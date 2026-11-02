@@ -10,7 +10,8 @@ import { CriticalityBadge, PriorityBadge, StageBadge, TypeLabel } from "@/compon
 import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { formatDate, formatDateTime, formatHours } from "@/lib/utils";
-import { availableActions } from "@/lib/workflow";
+import { availableActions, canAddWce, canDefer, primaryCloseBlocker } from "@/lib/workflow";
+import { JobPanel } from "@/components/work-orders/job-panel";
 
 export default async function WorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -21,6 +22,11 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
   const asset = wo.asset ? await repo.getAsset(wo.asset.id) : null;
   const cableRoute = asset?.asset_class?.code === "CABLE" ? asset : null;
   const pmSource = wo.pm_schedule_id && wo.asset ? (await repo.listPmSchedules({ assetId: wo.asset.id })).find((s) => s.id === wo.pm_schedule_id) : undefined;
+  const job = await repo.listJcn(wo.jcn);
+  const primary = job.find((w) => w.wce_seq === 1) ?? wo;
+  const deferredFrom = wo.deferred_from_wo_id ? await repo.getWorkOrder(wo.deferred_from_wo_id) : null;
+  const deferredTo = wo.deferred_to_jcn ? (await repo.listJcn(wo.deferred_to_jcn)).find((w) => w.wce_seq === 1) : undefined;
+  const closeBlocker = primaryCloseBlocker(wo, job);
 
   const actions = availableActions(profile.role, wo, { schedulerRoles: site.scheduler_roles });
   const nameOf = (pid: string | null) => profiles.find((p) => p.id === pid)?.full_name ?? "—";
@@ -35,7 +41,11 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
 
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <Mono className="text-sm">{wo.wo_number}</Mono>
+          <span className="text-[11px] uppercase tracking-wider text-tx-3">JCN</span>
+          <Mono className="text-sm">{wo.jcn}</Mono>
+          <span className="text-[11px] uppercase tracking-wider text-tx-3">WCE</span>
+          <Mono className="text-sm">{String(wo.wce_seq).padStart(3, "0")}</Mono>
+          {wo.wce_seq === 1 && <span className="text-[11px] text-tx-3">(primary)</span>}
           <StageBadge stage={wo.stage} status={wo.status} />
           <PriorityBadge priority={wo.priority} />
           <TypeLabel type={wo.wo_type} />
@@ -53,6 +63,25 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
       </header>
 
       <LifecycleStepper stage={wo.stage} status={wo.status} />
+
+      {deferredTo && (
+        <div className="rounded-[3px] border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          Corrective action deferred, see JCN{" "}
+          <Link href={`/work-orders/${deferredTo.id}`} className="font-mono underline">
+            {deferredTo.jcn}
+          </Link>
+          .
+        </div>
+      )}
+      {deferredFrom && (
+        <div className="rounded-[3px] border border-line-strong bg-panel-2 px-3 py-2 text-sm text-tx-2">
+          Written up from deferred WCE{" "}
+          <Link href={`/work-orders/${deferredFrom.id}`} className="font-mono text-brass-bright underline">
+            {deferredFrom.wo_number}
+          </Link>{" "}
+          ({deferredFrom.title}).
+        </div>
+      )}
 
       {wo.requires_shutdown && wo.status === "open" && (
         <div className="hazard-stripe flex items-center gap-2 rounded-[3px] border border-warn/40 px-3 py-2 text-sm text-warn">
@@ -93,6 +122,8 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
             )}
           </Panel>
 
+          <JobPanel jcn={wo.jcn} job={job} currentId={wo.id} canAdd={canAddWce(profile.role, primary)} />
+
           <Panel>
             <PanelHeader
               eyebrow="Job plan"
@@ -111,7 +142,7 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
                 )}
               </EmptyState>
             ) : (
-              <TaskList woId={wo.id} tasks={wo.tasks} canComplete={actions.includes("complete_task")} />
+              <TaskList woId={wo.id} tasks={wo.tasks} canComplete={actions.includes("complete_task")} scheduledDate={wo.scheduled_date} />
             )}
           </Panel>
 
@@ -122,7 +153,12 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
             {wo.parts.length === 0 ? (
               <EmptyState>No parts on this work order.</EmptyState>
             ) : (
-              <PartsTable woId={wo.id} parts={wo.parts} canIssue={actions.includes("issue_part")} />
+              <PartsTable
+                woId={wo.id}
+                parts={wo.parts}
+                canIssue={actions.includes("issue_part")}
+                canSetEta={wo.status === "open" && ["storeroom", "planner", "admin"].includes(profile.role)}
+              />
             )}
           </Panel>
         </div>
@@ -134,6 +170,9 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
             technicians={technicians}
             estimatedHours={wo.estimated_hours}
             openTasks={wo.tasks.filter((t) => !t.is_complete).length}
+            isPrimary={wo.wce_seq === 1}
+            closeBlocker={closeBlocker}
+            canDefer={canDefer(profile.role, wo)}
           />
 
           <Panel>
@@ -194,14 +233,14 @@ function describeEvent(type: string, to: string | null, fromPm: boolean): string
       return "scheduled the work";
     case "rescheduled":
       return "moved the scheduled date";
+    case "closed":
+      return "closed the WCE";
     case "task_completed":
       return "completed a step";
     case "part_issued":
       return "issued parts";
     case "rejected":
       return "rejected the work order";
-    case "closed":
-      return "closed the work order";
     case "stage_change":
       return to ? `moved it to ${to}` : "changed the stage";
     default:

@@ -248,9 +248,9 @@ export const CLASS_PM: Record<string, ClassPmDef> = {
   },
   "BMS-CTRL": {
     tasks: tasks(
-      { title: "Point-to-point verification of critical points", strategy: "condition_based", craft: "instrumentation", hours: 4, intervalDays: 365, criticalities: ABC, modes: ["AIR"] },
-      { title: "Alarm and sequence of operations test", strategy: "failure_finding", craft: "instrumentation", hours: 2, intervalDays: 365, criticalities: AB, modes: ["FTF"] },
-      { title: "Communication health and firmware review", strategy: "condition_based", craft: "instrumentation", hours: 1, intervalDays: 90, criticalities: AB, modes: ["NOO"] },
+      { title: "Point-to-point verification of critical points", strategy: "condition_based", craft: "process_controls", hours: 4, intervalDays: 365, criticalities: ABC, modes: ["AIR"] },
+      { title: "Alarm and sequence of operations test", strategy: "failure_finding", craft: "process_controls", hours: 2, intervalDays: 365, criticalities: AB, modes: ["FTF"] },
+      { title: "Communication health and firmware review", strategy: "condition_based", craft: "process_controls", hours: 1, intervalDays: 90, criticalities: AB, modes: ["NOO"] },
     ),
   },
   CHILLER: {

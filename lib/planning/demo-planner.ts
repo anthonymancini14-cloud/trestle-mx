@@ -1,4 +1,5 @@
-import { DEMO_FALLBACK_REPLY, DEMO_SCRIPTS, genericDemoPlan, type DemoScript } from "./demo-plans";
+import { demoSeedNumbers } from "@/lib/data/demo-repository";
+import { DEMO_FALLBACK_REPLY, DEMO_SCRIPTS, genericDemoPlan, resolveDemoScript, type DemoScript } from "./demo-plans";
 import type { JobPlan, PlanningMessage, PlanningStreamEvent } from "./plan-schema";
 
 export interface DemoPlanningInput {
@@ -10,8 +11,12 @@ export interface DemoPlanningInput {
   currentPlan: JobPlan | null;
 }
 
-export function demoScriptFor(woNumber: string): DemoScript | null {
-  return DEMO_SCRIPTS[woNumber] ?? null;
+/** The scripted session for a demo work order, with today's work order numbers filled in. */
+export function demoScriptFor(woNumber: string, numbers: Map<number, string> = demoSeedNumbers()): DemoScript | null {
+  for (const [seed, number] of numbers) {
+    if (number === woNumber && DEMO_SCRIPTS[seed]) return resolveDemoScript(DEMO_SCRIPTS[seed], (n) => numbers.get(n));
+  }
+  return null;
 }
 
 /** Suggested prompts for the chips under the chat, minus ones already used. */

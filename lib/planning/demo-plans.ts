@@ -26,14 +26,14 @@ export interface DemoScript {
 }
 
 // ----------------------------------------------------------------------------
-// WO-26-1031  P-201B inboard bearing high vibration and temperature
+// {{WO:1031}}  P-201B inboard bearing high vibration and temperature
 // ----------------------------------------------------------------------------
 
 const p201bPlan: JobPlan = {
   summary:
     "Take high-service pump B out of service with pump A on duty, replace both bearings, find the cause of the inboard failure, correct soft foot, laser align and prove it out under load.",
   likely_cause:
-    "Inboard bearing distress. Evidence: inboard overall vibration rose from 0.14 to 0.21 in/s by the last route (WO-26-1012) and is now 0.42 in/s; bearing temperature 188 °F against about 150 °F typical; audible growl; fine metallic sheen in the drained oil. The sister pump P-201A failed the same way, and its debrief tied the spalling to misalignment from uncorrected soft foot (WO-26-1009). Misalignment is the leading hypothesis; lubrication is second.",
+    "Inboard bearing distress. Evidence: inboard overall vibration rose from 0.14 to 0.21 in/s by the last route ({{WO:1012}}) and is now 0.42 in/s; bearing temperature 188 °F against about 150 °F typical; audible growl; fine metallic sheen in the drained oil. The sister pump P-201A failed the same way, and its debrief tied the spalling to misalignment from uncorrected soft foot ({{WO:1009}}). Misalignment is the leading hypothesis; lubrication is second.",
   requires_shutdown: true,
   estimated_duration_hours: 14,
   permits: ["Energy control (LOTO), group lockout", "Lift plan for upper casing half"],
@@ -53,7 +53,7 @@ const p201bPlan: JobPlan = {
   tasks: [
     { seq: 10, description: "Confirm P-201A is on duty and healthy with operations; remove P-201B from service, drain, apply group lockout and verify isolation", craft: "operations", crew_size: 1, est_hours: 1.5, safety_note: "Try-start from local and SCADA after locks are on.", acceptance_criteria: "Zero pressure on casing gauge; no start from either control point." },
     { seq: 20, description: "Remove coupling guard and spacer; record as-found alignment and check soft foot on all motor feet", craft: "mechanical", crew_size: 2, est_hours: 1.5, safety_note: null, acceptance_criteria: "As-found readings recorded in the work order." },
-    { seq: 30, description: "Unbolt and lift upper casing half; lift out rotating element to the laydown area", craft: "mechanical", crew_size: 2, est_hours: 3, safety_note: "5-ton chain fall per WO-26-1009 debrief; the 2-ton was undersized.", acceptance_criteria: null },
+    { seq: 30, description: "Unbolt and lift upper casing half; lift out rotating element to the laydown area", craft: "mechanical", crew_size: 2, est_hours: 3, safety_note: "5-ton chain fall per {{WO:1009}} debrief; the 2-ton was undersized.", acceptance_criteria: null },
     { seq: 40, description: "Remove both bearings; inspect and photograph races; keep failed bearing for analysis; measure shaft and housing fits", craft: "mechanical", crew_size: 2, est_hours: 2, safety_note: null, acceptance_criteria: "Fits within OEM tolerance or flagged before reassembly." },
     { seq: 50, description: "Install new bearings with induction heater; set end float per OEM", craft: "mechanical", crew_size: 2, est_hours: 2, safety_note: "No hammering on rolling elements.", acceptance_criteria: "End float within OEM range." },
     { seq: 60, description: "Reinstall rotating element; new split-line gasket; torque casing bolts in sequence", craft: "mechanical", crew_size: 2, est_hours: 2, safety_note: null, acceptance_criteria: "Rotor turns freely by hand." },
@@ -70,8 +70,8 @@ const p201bPlan: JobPlan = {
   ],
   tools: ["Laser shaft alignment system", "Induction bearing heater", "5-ton chain fall and rated slings", "Dial indicator for end float and soft foot", "Torque wrench"],
   references: [
-    { source: "WO-26-1009 (P-201A bearing replacement)", note: "Ran 15.5 h vs 12 planned; found soft foot; needed 5-ton chain fall. Built into steps 20, 30 and 70 and the hours." },
-    { source: "WO-26-1012 (P-201B oil change and route)", note: "Inboard vibration trend and metallic sheen in oil support the bearing diagnosis." },
+    { source: "{{WO:1009}} (P-201A bearing replacement)", note: "Ran 15.5 h vs 12 planned; found soft foot; needed 5-ton chain fall. Built into steps 20, 30 and 70 and the hours." },
+    { source: "{{WO:1012}} (P-201B oil change and route)", note: "Inboard vibration trend and metallic sheen in oil support the bearing diagnosis." },
     { source: "Rotating equipment practice (layer 1)", note: "Soft foot before alignment; tolerance targets; bearing mounting." },
     { source: "Energy control (layer 1)", note: "Reverse rotation and stored pressure on pumps; verification of isolation." },
   ],
@@ -131,7 +131,7 @@ const p201bTurns: DemoTurn[] = [
 ];
 
 // ----------------------------------------------------------------------------
-// WO-26-1033  Hypochlorite metering pump output low
+// {{WO:1033}}  Hypochlorite metering pump output low
 // ----------------------------------------------------------------------------
 
 const mp401Plan: JobPlan = {
@@ -164,7 +164,7 @@ const mp401Plan: JobPlan = {
 };
 
 // ----------------------------------------------------------------------------
-// WO-26-1035  Boiler feedwater pump seal leak
+// {{WO:1035}}  Boiler feedwater pump seal leak
 // ----------------------------------------------------------------------------
 
 const p502Plan: JobPlan = {
@@ -202,7 +202,7 @@ const p502Plan: JobPlan = {
 };
 
 // ----------------------------------------------------------------------------
-// WO-26-1036  Standby generator annual load bank test
+// {{WO:1036}}  Standby generator annual load bank test
 // ----------------------------------------------------------------------------
 
 const gen703Plan: JobPlan = {
@@ -232,14 +232,14 @@ const gen703Plan: JobPlan = {
 };
 
 // ----------------------------------------------------------------------------
-// WO-26-2007  Fiber trunk CBL-0101 high loss on links to cabinet A03 (Cedar Flats)
+// {{WO:2007}}  Fiber trunk CBL-0101 high loss on links to cabinet A03 (Cedar Flats)
 // ----------------------------------------------------------------------------
 
 const cbl0101Plan: JobPlan = {
   summary:
     "Replace fiber trunk CFD-DH1-CBL-0101 (ODF-01 panel 2 to cabinet A03) like for like with a 45 m MPO-24 OS2 trunk, laid in through the same three tray sections and dressed onto the A03 waterfall. Remove the damaged trunk and test every lane before handing links back.",
   likely_cause:
-    "Bend damage where the trunk drops into A03. Evidence: the OTDR event at about 38 m is at the A03 end of a 41 m trunk, where it leaves CFD-DH1-CT-A; and the WO-26-2001 debrief says this trunk was left resting on the tray edge with a tight bend because it couldn't be re-dressed while live. A hypothesis until the drop is inspected.",
+    "Bend damage where the trunk drops into A03. Evidence: the OTDR event at about 38 m is at the A03 end of a 41 m trunk, where it leaves CFD-DH1-CT-A; and the {{WO:2001}} debrief says this trunk was left resting on the tray edge with a tight bend because it couldn't be re-dressed while live. A hypothesis until the drop is inspected.",
   suspected_failure_mode: "STD",
   requires_shutdown: true,
   estimated_duration_hours: 5,
@@ -279,7 +279,7 @@ const cbl0101Plan: JobPlan = {
   ],
   tools: ["Fiber inspection scope with MPO tip and MPO cleaner", "MPO light source and power meter", "OTDR with MPO launch cable", "Personnel lift", "Fiber shard disposal container"],
   references: [
-    { source: "WO-26-2001 (row A waterfalls)", note: "Debrief: CBL-0101 left on the tray edge with a tight bend at the A03 drop; recommended re-dress or replace. This plan acts on it." },
+    { source: "{{WO:2001}} (row A waterfalls)", note: "Debrief: CBL-0101 left on the tray edge with a tight bend at the A03 drop; recommended re-dress or replace. This plan acts on it." },
     { source: "Cable plant (layer 2)", note: "Bend radius 20× OD pulling, 10× installed; inspect and clean before mating; remove abandoned cable." },
     { source: "Storeroom spec MX-FIB-MPO24-OS2-45M", note: "Same fiber type, count, connector, polish and Type B polarity as the existing channel. 1 available." },
   ],
@@ -329,32 +329,38 @@ const cbl0101Turns: DemoTurn[] = [
   },
 ];
 
-export const DEMO_SCRIPTS: Record<string, DemoScript> = {
-  "WO-26-2007": {
+/**
+ * Scripted Planning Mode sessions, keyed by seed work order (lib/demo/seed*.ts).
+ * Work order numbers are JCN-WCE numbers built from the demo's dates, so they
+ * change from day to day; the scripts cite them as {{WO:seed}} tokens and
+ * `resolveDemoScript` fills in today's numbers.
+ */
+export const DEMO_SCRIPTS: Record<number, DemoScript> = {
+  2007: {
     intro:
-      "Here's a draft to replace trunk CBL-0101. The best evidence is in your own history: the WO-26-2001 debrief says this trunk was left on the edge of the row A tray with a tight bend at the A03 drop, because it couldn't be re-dressed while live. The OTDR event at 38 m of a 41 m trunk is right at that drop.\n\nThe plan lays a new 45 m trunk through the same three tray sections, CFD-MMR-CT-01, CFD-DH1-CT-X1 and CFD-DH1-CT-A, and dresses it onto the A03 waterfall this time. Bend radius limits come from the 4.5 mm outer diameter in the storeroom spec: 90 mm while laying in, 45 mm once dressed. There's exactly one 45 m trunk in stock, so I flagged a reorder.",
+      "Here's a draft to replace trunk CBL-0101. The best evidence is in your own history: the {{WO:2001}} debrief says this trunk was left on the edge of the row A tray with a tight bend at the A03 drop, because it couldn't be re-dressed while live. The OTDR event at 38 m of a 41 m trunk is right at that drop.\n\nThe plan lays a new 45 m trunk through the same three tray sections, CFD-MMR-CT-01, CFD-DH1-CT-X1 and CFD-DH1-CT-A, and dresses it onto the A03 waterfall this time. Bend radius limits come from the 4.5 mm outer diameter in the storeroom spec: 90 mm while laying in, 45 mm once dressed. There's exactly one 45 m trunk in stock, so I flagged a reorder.",
     plan: cbl0101Plan,
     turns: cbl0101Turns,
   },
-  "WO-26-1031": {
+  1031: {
     intro:
-      "Here's a first draft. The big input is history: P-201A had the same failure in the spring (WO-26-1009) and overran by 3.5 hours because nobody planned for soft foot or the heavier chain fall. I built both into this plan, so it's 14 hours, not the 12 that job was planned at.\n\nThe vibration trend on B (0.14 to 0.21 to 0.42 in/s) and the metallic sheen in the last oil change point at the inboard bearing. I listed misalignment as the leading cause, since that's what the sister pump showed. Bearings, gasket and shims are all in stock.",
+      "Here's a first draft. The big input is history: P-201A had the same failure in the spring ({{WO:1009}}) and overran by 3.5 hours because nobody planned for soft foot or the heavier chain fall. I built both into this plan, so it's 14 hours, not the 12 that job was planned at.\n\nThe vibration trend on B (0.14 to 0.21 to 0.42 in/s) and the metallic sheen in the last oil change point at the inboard bearing. I listed misalignment as the leading cause, since that's what the sister pump showed. Bearings, gasket and shims are all in stock.",
     plan: p201bPlan,
     turns: p201bTurns,
   },
-  "WO-26-1033": {
+  1033: {
     intro:
       "Drafted a wet-end rebuild. 70% output at full stroke on a drawdown is the classic signature of a worn diaphragm or scaled check valves on hypochlorite. The kit is in stock (one on hand). The main planning risk is disinfection while the pump is down, so step 10 puts the backup feed in service first.",
     plan: mp401Plan,
     turns: [],
   },
-  "WO-26-1035": {
+  1035: {
     intro:
       "Drafted a seal replacement with the boiler off line. Flag before you go further: the high-temp seal (MX-SEAL-1625C) shows zero available, so this can't be scheduled until it's ordered. I also couldn't find a second feedwater pump in the asset registry. If there isn't one, this is a boiler outage and operations needs to plan around it.",
     plan: p502Plan,
     turns: [],
   },
-  "WO-26-1036": {
+  1036: {
     intro:
       "Drafted the annual load bank test with a contractor load bank. No storeroom parts are needed unless the engine is due for its oil service by hours; that's an open question. The key coordination item is that the plant has no automatic standby while the unit is under test.",
     plan: gen703Plan,
@@ -387,3 +393,16 @@ export function genericDemoPlan(title: string, assetLabel: string | null, shutdo
 
 export const DEMO_FALLBACK_REPLY =
   "You're on the public demo, where Planning Mode runs a scripted planner so it works without an API key. It can't reason over free text, so the plan is unchanged. Try one of the suggested prompts, or edit the plan directly. With an Anthropic API key configured, this message would go to Claude with the full site context.";
+
+/** Replace {{WO:seed}} tokens with current work order numbers, everywhere in a script (including revised plans). */
+export function resolveDemoScript(script: DemoScript, numberOf: (seed: number) => string | undefined): DemoScript {
+  const fill = (text: string) => text.replace(/\{\{WO:(\d+)\}\}/g, (_, n: string) => numberOf(Number(n)) ?? "an earlier work order");
+  const walk = <T,>(v: T): T => {
+    if (typeof v === "string") return fill(v) as T;
+    if (typeof v === "function") return ((...args: unknown[]) => walk((v as (...a: unknown[]) => unknown)(...args))) as T;
+    if (Array.isArray(v)) return v.map(walk) as T;
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) as T;
+    return v;
+  };
+  return walk(script);
+}

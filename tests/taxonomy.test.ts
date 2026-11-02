@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { dbNum } from "./seed-numbers";
 import { buildSiteContext, formatSiteContext } from "@/lib/anthropic/context/site-context";
 import { DemoRepository, resetDemoStore } from "@/lib/data/demo-repository";
 import { buildDataset } from "@/lib/demo/dataset";
@@ -132,7 +133,7 @@ describe("Planning Mode context", () => {
 
   it("gives Claude the asset's class, nameplate and failure modes", async () => {
     const repo = new DemoRepository(SITE.id);
-    const wo = db.workOrders.find((w) => w.wo_number === "WO-26-1031")!;
+    const wo = db.workOrders.find((w) => w.wo_number === dbNum(db, 1031))!;
     const ctx = await buildSiteContext(repo, wo.id);
     const text = formatSiteContext(ctx!);
     expect(text).toContain("Class: Centrifugal pump (PUMP-CENT)");

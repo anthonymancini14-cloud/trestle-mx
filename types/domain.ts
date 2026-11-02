@@ -49,7 +49,7 @@ export type WoStatus = "open" | "closed" | "rejected";
 export type WoType = "corrective" | "preventive" | "predictive" | "emergency" | "project";
 export type Priority = 1 | 2 | 3 | 4;
 export type Criticality = "A" | "B" | "C";
-export type Craft = "mechanical" | "electrical" | "instrumentation" | "operations" | "contractor";
+export type Craft = "mechanical" | "electrical" | "instrumentation" | "process_controls" | "operations" | "contractor";
 
 /** Industry vertical. Set per site; asset classes declare which verticals use them. */
 export const VERTICALS = ["industrial_utility", "data_center"] as const;
@@ -74,6 +74,8 @@ export interface Site {
   vertical: Vertical;
   /** Roles that may schedule and move work on the calendar at this site. Admin always can (TMX-015). */
   scheduler_roles: Role[];
+  /** First 4-digit job ID of each day's JCNs at this site, e.g. 5000 → 263045000, 263045001 … */
+  jcn_block: number;
 }
 
 export interface AreaCode {
@@ -243,10 +245,26 @@ export interface PmScheduleRow extends PmSchedule {
   deferrals: (PmDeferral & { approver_name: string | null })[];
 }
 
+/**
+ * A work order is one work center event (WCE) under a job control number (JCN),
+ * after the Air Force system Trestle.MX started from. JCN = YY + Julian day +
+ * the site's 4-digit job ID (263045000). Each shop's work on a discrepancy is
+ * its own WCE (263045000-001, -002 …) and runs the full lifecycle on its own.
+ * WCE -001 belongs to the shop primarily responsible; it closes last, with the
+ * corrective action summary, once every other WCE on the JCN is closed.
+ */
 export interface WorkOrder {
   id: string;
   site_id: string;
+  /** Display number: the WCE number, `${jcn}-${wce_seq padded to 3}`. */
   wo_number: string;
+  jcn: string;
+  /** 1 for the primary WCE. */
+  wce_seq: number;
+  /** Set when this WCE was closed as deferred: the new JCN that carries the work. */
+  deferred_to_jcn: string | null;
+  /** On a JCN's -001 written up for deferred work: the WCE it came from. */
+  deferred_from_wo_id: string | null;
   title: string;
   description: string;
   asset_id: string | null;
@@ -274,6 +292,8 @@ export interface WoTask {
   id: string;
   wo_id: string;
   seq: number;
+  /** Day of the WCE this step happens on, 1 = the scheduled date. Multi-day work uses 2, 3 … */
+  day: number;
   description: string;
   craft: Craft;
   crew_size: number;
@@ -343,6 +363,8 @@ export interface Part {
   category: string;
   unit: string;
   unit_cost: number;
+  /** Typical days from order to on site. Sets the expected date when a plan needs a part the storeroom doesn't have. */
+  lead_time_days: number | null;
   /** Structured specification for parts that need one (cables). */
   specs: PartSpecs | null;
 }
@@ -368,6 +390,8 @@ export interface WoPart {
   qty_required: number;
   qty_used: number;
   status: WoPartStatus;
+  /** For a part not yet on site (status planned): when it is expected. Null = no date yet. */
+  expected_on: string | null;
 }
 
 /** Joined shapes used by the UI. */
@@ -416,12 +440,13 @@ export interface InventoryItem extends InventoryRow {
 
 // ---------------------------------------------------------------- Scheduling
 
-export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "operations", "contractor"];
+export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "process_controls", "operations", "contractor"];
 
 export const CRAFT_LABELS: Record<Craft, string> = {
   mechanical: "Mechanical",
   electrical: "Electrical",
   instrumentation: "Instrumentation",
+  process_controls: "Process controls",
   operations: "Operations",
   contractor: "Contractor",
 };
@@ -473,6 +498,11 @@ export interface CalendarWorkOrder
   > {
   asset: Pick<Asset, "id" | "floc" | "name" | "criticality"> | null;
   assignee: Pick<Profile, "id" | "full_name" | "craft"> | null;
-  /** Crew-hours by craft from the job plan (est hours × crew size). Empty until the job is planned. */
-  craft_hours: Partial<Record<Craft, number>>;
+  jcn: string;
+  wce_seq: number;
+  /** Crew-hours by day of the WCE (1 = scheduled date) and craft, from the job plan. Empty until planned. */
+  day_hours: Record<number, Partial<Record<Craft, number>>>;
+  /** Parts not yet on site: count, and the latest expected date (null if any has no date). */
+  parts_short: number;
+  parts_ready_on: string | null;
 }

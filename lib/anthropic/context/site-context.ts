@@ -1,4 +1,5 @@
 import "server-only";
+import { todayAt } from "@/lib/utils";
 import type { Repository } from "@/lib/data/repository";
 import { daysBetween } from "@/lib/pm/program";
 import { formatAttribute } from "@/lib/taxonomy/assess";
@@ -38,6 +39,8 @@ export interface SiteContext {
   carriedCables: AssetDetail["carried_cables"];
   /** The asset's PM schedule, so PMs due soon can be done in the same outage. */
   pmSchedules: PmScheduleRow[];
+  /** Every WCE on this work order's JCN. */
+  job: WorkOrderListItem[];
   today: string;
 }
 
@@ -92,7 +95,8 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
     route: detail?.route ?? [],
     carriedCables: detail?.carried_cables ?? [],
     pmSchedules: asset ? await repo.listPmSchedules({ assetId: asset.id }) : [],
-    today: new Date().toISOString().slice(0, 10),
+    job: await repo.listJcn(workOrder.jcn),
+    today: todayAt(site.timezone),
   };
 }
 
@@ -102,6 +106,11 @@ export function formatSiteContext(ctx: SiteContext): string {
   const lines: string[] = [];
 
   lines.push(`## Work order ${wo.wo_number}: ${wo.title}`);
+  lines.push(`This is WCE ${String(wo.wce_seq).padStart(3, "0")} on JCN ${wo.jcn}${wo.wce_seq === 1 ? " (the primary shop's WCE)" : ""}.`);
+  const others = ctx.job.filter((w) => w.id !== wo.id);
+  if (others.length) {
+    lines.push(`Other WCEs on this JCN: ${others.map((w) => `${w.wo_number} ${w.title} (${w.status === "open" ? w.stage : w.status}${w.scheduled_date ? `, scheduled ${w.scheduled_date}` : ""})`).join("; ")}.`);
+  }
   lines.push(`Type: ${wo.wo_type}. Priority: P${wo.priority}. Stage: ${wo.stage}.`);
   lines.push(`Reported problem: ${wo.description}`);
   if (wo.tasks.length) {

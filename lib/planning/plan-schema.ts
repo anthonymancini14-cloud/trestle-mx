@@ -8,7 +8,7 @@ import { z } from "zod";
  * moves the work order to Scheduling. The same zod schema validates Claude's
  * tool input and generates the tool's JSON schema, so the two never drift.
  */
-export const CRAFTS = ["mechanical", "electrical", "instrumentation", "operations", "contractor"] as const;
+export const CRAFTS = ["mechanical", "electrical", "instrumentation", "process_controls", "operations", "contractor"] as const;
 
 export const jobPlanSchema = z.object({
   summary: z.string().describe("One or two sentences: what the job is and the expected outcome."),
@@ -41,6 +41,13 @@ export const jobPlanSchema = z.object({
     .array(
       z.object({
         seq: z.number().int().describe("Step number in multiples of 10."),
+        day: z
+          .number()
+          .int()
+          .min(1)
+          .max(14)
+          .optional()
+          .describe("Day of this WCE the step happens on: 1 is the scheduled date. Use 2, 3 … for work that runs over several days. Omit for single-day work."),
         description: z.string(),
         craft: z.enum(CRAFTS),
         crew_size: z.number().int().min(1),

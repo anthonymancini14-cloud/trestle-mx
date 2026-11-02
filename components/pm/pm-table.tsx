@@ -9,7 +9,7 @@ import { CriticalityBadge, StageBadge } from "@/components/status";
 import { EmptyState, Input, Mono, Select, Table, Td, Th } from "@/components/ui/primitives";
 import type { DueState } from "@/lib/pm/program";
 import { cn, formatDay } from "@/lib/utils";
-import { PM_STRATEGIES, PM_STRATEGY_LABELS, STAGE_LABELS, WO_STAGES, type Criticality, type PmScheduleRow } from "@/types/domain";
+import { CRAFT_LABELS, CRAFTS, PM_STRATEGIES, PM_STRATEGY_LABELS, STAGE_LABELS, WO_STAGES, type Craft, type Criticality, type PmScheduleRow } from "@/types/domain";
 
 export type PmTableRow = PmScheduleRow & { state: DueState; days: number };
 
@@ -30,14 +30,17 @@ const SORTERS: Record<SortKey, (a: PmTableRow, b: PmTableRow) => number> = {
 };
 
 interface Filters {
-  q: string;
+  asset: string;
   crit: "" | Criticality;
+  task: string;
   strategy: string;
   craft: string;
   mode: string;
+  interval: string;
+  due: "" | DueState;
   wo: string;
 }
-const NO_FILTERS: Filters = { q: "", crit: "", strategy: "", craft: "", mode: "", wo: "" };
+const NO_FILTERS: Filters = { asset: "", crit: "", task: "", strategy: "", craft: "", mode: "", interval: "", due: "", wo: "" };
 
 /**
  * The PM schedule table. Every column sorts; the filter bar narrows by asset,
@@ -58,21 +61,27 @@ export function PmTable({
   const [f, setF] = useState<Filters>(NO_FILTERS);
 
   const options = useMemo(() => {
-    const crafts = new Set<string>();
+    const crafts = new Set<Craft>();
     const modes = new Set<string>();
+    const intervals = new Set<number>();
     for (const r of rows) {
       crafts.add(r.task.craft);
+      intervals.add(r.interval_days);
       r.task.failure_mode_codes.forEach((m) => modes.add(m));
     }
-    return { crafts: [...crafts].sort(), modes: [...modes].sort() };
+    return { crafts: CRAFTS.filter((c) => crafts.has(c)), modes: [...modes].sort(), intervals: [...intervals].sort((x, y) => x - y) };
   }, [rows]);
 
   const visible = useMemo(() => {
-    const q = f.q.trim().toLowerCase();
+    const qa = f.asset.trim().toLowerCase();
+    const qt = f.task.trim().toLowerCase();
     const out = rows.filter(
       (r) =>
-        (!q || `${r.asset.floc} ${r.asset.name} ${r.task.code} ${r.task.title}`.toLowerCase().includes(q)) &&
+        (!qa || `${r.asset.floc} ${r.asset.name}`.toLowerCase().includes(qa)) &&
+        (!qt || `${r.task.code} ${r.task.title}`.toLowerCase().includes(qt)) &&
         (!f.crit || r.asset.criticality === f.crit) &&
+        (!f.interval || r.interval_days === Number(f.interval)) &&
+        (!f.due || r.state === f.due) &&
         (!f.strategy || r.task.strategy === f.strategy) &&
         (!f.craft || r.task.craft === f.craft) &&
         (!f.mode || r.task.failure_mode_codes.includes(f.mode)) &&
@@ -106,66 +115,8 @@ export function PmTable({
 
   return (
     <>
-      <div role="search" aria-label="Filter the PM table" className="flex flex-wrap items-end gap-2 border-b border-line px-3 py-2.5">
-        <Input
-          aria-label="Search asset or PM task"
-          placeholder="Search asset, tag or task"
-          value={f.q}
-          onChange={(e) => set("q", e.target.value)}
-          className="h-9 w-full sm:w-56"
-        />
-        <Select aria-label="Criticality" value={f.crit} onChange={(e) => set("crit", e.target.value as Filters["crit"])} className="w-auto">
-          <option value="">All criticality</option>
-          <option value="A">Crit A</option>
-          <option value="B">Crit B</option>
-          <option value="C">Crit C</option>
-        </Select>
-        <Select aria-label="Strategy" value={f.strategy} onChange={(e) => set("strategy", e.target.value)} className="w-auto">
-          <option value="">All strategies</option>
-          {PM_STRATEGIES.map((s) => (
-            <option key={s} value={s}>
-              {PM_STRATEGY_LABELS[s]}
-            </option>
-          ))}
-        </Select>
-        <Select aria-label="Craft" value={f.craft} onChange={(e) => set("craft", e.target.value)} className="w-auto capitalize">
-          <option value="">All crafts</option>
-          {options.crafts.map((c) => (
-            <option key={c} value={c}>
-              {c[0].toUpperCase() + c.slice(1)}
-            </option>
-          ))}
-        </Select>
-        <Select aria-label="Failure mode" value={f.mode} onChange={(e) => set("mode", e.target.value)} className="w-auto max-w-56">
-          <option value="">All failure modes</option>
-          {options.modes.map((m) => (
-            <option key={m} value={m}>
-              {m} · {modeNames[m] ?? m}
-            </option>
-          ))}
-        </Select>
-        <Select aria-label="Work order" value={f.wo} onChange={(e) => set("wo", e.target.value)} className="w-auto">
-          <option value="">Any work order status</option>
-          <option value="none">No open work order</option>
-          <option value="any">Has an open work order</option>
-          {WO_STAGES.filter((s) => s !== "closure" && s !== "identification").map((s) => (
-            <option key={s} value={s}>
-              Work order in {STAGE_LABELS[s]}
-            </option>
-          ))}
-        </Select>
-        {active && (
-          <button type="button" onClick={() => setF(NO_FILTERS)} className="inline-flex h-9 items-center gap-1 px-2 text-xs text-brass hover:text-brass-bright">
-            <X className="size-3" aria-hidden /> Clear
-          </button>
-        )}
-        <span className="ml-auto self-center font-mono text-xs text-tx-3" role="status">
-          {visible.length} of {rows.length}
-        </span>
-      </div>
-
-      {visible.length === 0 ? (
-        <EmptyState>{rows.length === 0 ? "Nothing here. Every PM in this view is current." : "No PMs match these filters."}</EmptyState>
+      {rows.length === 0 ? (
+        <EmptyState>Nothing here. Every PM in this view is current.</EmptyState>
       ) : (
         <Table>
           <thead>
@@ -179,8 +130,107 @@ export function PmTable({
               {header("wo", "Work order")}
               {canDefer && <Th className="w-24" />}
             </tr>
+            <tr role="search" aria-label="Filter the PM table" className="bg-panel-2/60">
+              <FilterCell>
+                <Input aria-label="Filter by asset or tag" placeholder="Asset or tag" value={f.asset} onChange={(e) => set("asset", e.target.value)} className={FILTER} />
+                <Select aria-label="Filter by criticality" value={f.crit} onChange={(e) => set("crit", e.target.value as Filters["crit"])} className={FILTER}>
+                  <option value="">All crit</option>
+                  <option value="A">Crit A</option>
+                  <option value="B">Crit B</option>
+                  <option value="C">Crit C</option>
+                </Select>
+              </FilterCell>
+              <FilterCell>
+                <Input aria-label="Filter by PM task" placeholder="Task code or title" value={f.task} onChange={(e) => set("task", e.target.value)} className={FILTER} />
+                <div className="flex gap-1">
+                  <Select aria-label="Filter by strategy" value={f.strategy} onChange={(e) => set("strategy", e.target.value)} className={FILTER}>
+                    <option value="">All strategies</option>
+                    {PM_STRATEGIES.map((s) => (
+                      <option key={s} value={s}>
+                        {PM_STRATEGY_LABELS[s]}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select aria-label="Filter by craft" value={f.craft} onChange={(e) => set("craft", e.target.value)} className={FILTER}>
+                    <option value="">All crafts</option>
+                    {options.crafts.map((c) => (
+                      <option key={c} value={c}>
+                        {CRAFT_LABELS[c]}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="2xl:hidden"><Select aria-label="Filter by failure mode" value={f.mode} onChange={(e) => set("mode", e.target.value)} className={FILTER}>
+                  <option value="">All modes</option>
+                  {options.modes.map((m) => (
+                    <option key={m} value={m}>
+                      {m} · {modeNames[m] ?? m}
+                    </option>
+                  ))}
+                </Select></div>
+              </FilterCell>
+              <FilterCell className="hidden 2xl:table-cell"><Select aria-label="Filter by failure mode" value={f.mode} onChange={(e) => set("mode", e.target.value)} className={FILTER}>
+                  <option value="">All modes</option>
+                  {options.modes.map((m) => (
+                    <option key={m} value={m}>
+                      {m} · {modeNames[m] ?? m}
+                    </option>
+                  ))}
+                </Select></FilterCell>
+              <FilterCell>
+                <Select aria-label="Filter by interval" value={f.interval} onChange={(e) => set("interval", e.target.value)} className={FILTER}>
+                  <option value="">All</option>
+                  {options.intervals.map((d) => (
+                    <option key={d} value={d}>
+                      {intervalLabel(d)}
+                    </option>
+                  ))}
+                </Select>
+              </FilterCell>
+              <FilterCell className="hidden xl:table-cell" />
+              <FilterCell>
+                <Select aria-label="Filter by due state" value={f.due} onChange={(e) => set("due", e.target.value as Filters["due"])} className={FILTER}>
+                  <option value="">All</option>
+                  <option value="overdue">Overdue</option>
+                  <option value="due">Due</option>
+                  <option value="upcoming">Next 30 days</option>
+                  <option value="current">Current</option>
+                </Select>
+              </FilterCell>
+              <FilterCell>
+                <Select aria-label="Filter by work order" value={f.wo} onChange={(e) => set("wo", e.target.value)} className={FILTER}>
+                  <option value="">Any</option>
+                  <option value="none">None open</option>
+                  <option value="any">Has one open</option>
+                  {WO_STAGES.filter((s) => s !== "closure" && s !== "identification").map((s) => (
+                    <option key={s} value={s}>
+                      In {STAGE_LABELS[s]}
+                    </option>
+                  ))}
+                </Select>
+              </FilterCell>
+              {canDefer && (
+                <FilterCell className="text-right align-middle">
+                  {active && (
+                    <button type="button" onClick={() => setF(NO_FILTERS)} className="inline-flex items-center gap-1 text-xs text-brass hover:text-brass-bright">
+                      <X className="size-3" aria-hidden /> Clear
+                    </button>
+                  )}
+                </FilterCell>
+              )}
+            </tr>
           </thead>
           <tbody>
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-tx-3">
+                  No PMs match these filters.{" "}
+                  <button type="button" onClick={() => setF(NO_FILTERS)} className="text-brass hover:text-brass-bright">
+                    Clear filters
+                  </button>
+                </td>
+              </tr>
+            )}
             {visible.map((r) => (
               <tr key={r.id} className="hover:bg-panel-2">
                 <Td>
@@ -233,6 +283,18 @@ export function PmTable({
           </tbody>
         </Table>
       )}
+      {rows.length > 0 && (
+        <div className="flex items-center justify-between border-t border-line px-3 py-2 text-xs text-tx-3">
+          <span role="status" className="font-mono">
+            {visible.length} of {rows.length} PMs
+          </span>
+          {active && !canDefer && (
+            <button type="button" onClick={() => setF(NO_FILTERS)} className="inline-flex items-center gap-1 text-brass hover:text-brass-bright">
+              <X className="size-3" aria-hidden /> Clear filters
+            </button>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -249,4 +311,10 @@ function ModeCodes({ codes, names, long, className }: { codes: string[]; names: 
       ))}
     </span>
   );
+}
+
+const FILTER = "h-8 w-full min-w-0 px-2 text-xs";
+
+function FilterCell({ className, children }: { className?: string; children?: React.ReactNode }) {
+  return <th className={cn("space-y-1 border-b border-line px-3 py-1.5 text-left align-top font-normal", className)}>{children}</th>;
 }
