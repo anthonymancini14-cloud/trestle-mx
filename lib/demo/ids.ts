@@ -18,6 +18,12 @@ const TABLE_KEYS = {
   assetClass: "00c",
   failureMode: "00d",
   cableRoute: "00e",
+  pmTask: "00f",
+  classSpare: "010",
+  pmSchedule: "011",
+  pmDeferral: "012",
+  crewShift: "013",
+  timeOff: "014",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

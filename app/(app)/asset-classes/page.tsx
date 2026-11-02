@@ -10,7 +10,7 @@ export const metadata = { title: "Class library" };
 
 export default async function AssetClassesPage() {
   const { repo } = await getViewer();
-  const [classes, assets, { site, org }] = await Promise.all([repo.listAssetClasses(), repo.listAssets(), repo.getSite()]);
+  const [classes, assets, { site }] = await Promise.all([repo.listAssetClasses(), repo.listAssets(), repo.getSite()]);
   const quality = assessRegister(assets, classes);
   const inUse = classes.filter((c) => quality.byClass.has(c.id)).length;
   const modes = classes.reduce((n, c) => n + c.failure_modes.length, 0);
@@ -20,7 +20,7 @@ export default async function AssetClassesPage() {
       <div>
         <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Asset class library</h1>
         <p className="max-w-3xl text-sm text-tx-3">
-          One standard for every site in {org.name}. Each class sets the nameplate fields an asset must carry and the failure modes it is known for, so
+          One standard for every site. Each class sets the nameplate fields an asset must carry and the failure modes it is known for, so
           equipment can be compared site to site and every PM task can point back to the failure it prevents. Failure mode codes follow ISO 14224 style.
         </p>
       </div>

@@ -113,7 +113,7 @@ export default function Home() {
             ))}
           </div>
           <p className="mt-6 text-center text-xs text-tx-3">
-            Cedar Flats Data Center, Basalt Ridge Plant and Northfork Infrastructure are fictional. All people, equipment and records are
+            Cedar Flats Data Center and Basalt Ridge Plant are fictional. All people, equipment and records are
             invented. You can switch sites and roles at any time from the top bar.
           </p>
         </form>

@@ -35,9 +35,20 @@ export const ACTION_RULES: Record<WoAction, ActionRule> = {
   close: { stage: "closure", roles: ["supervisor", "admin"], label: "Close with debrief" },
 };
 
-export function canPerform(action: WoAction, role: Role, wo: Pick<WorkOrder, "stage" | "status">): boolean {
+/** Site settings that change who may act. `schedulerRoles` comes from the site (TMX-015). */
+export interface WorkflowOptions {
+  schedulerRoles?: readonly Role[];
+}
+
+/** Roles allowed to take an action, after site settings. Admin can always schedule. */
+export function rolesFor(action: WoAction, opts: WorkflowOptions = {}): readonly Role[] {
+  if (action === "schedule" && opts.schedulerRoles) return ["admin", ...opts.schedulerRoles.filter((r) => r !== "admin")];
+  return ACTION_RULES[action].roles;
+}
+
+export function canPerform(action: WoAction, role: Role, wo: Pick<WorkOrder, "stage" | "status">, opts: WorkflowOptions = {}): boolean {
   const rule = ACTION_RULES[action];
-  return wo.status === "open" && wo.stage === rule.stage && rule.roles.includes(role);
+  return wo.status === "open" && wo.stage === rule.stage && rolesFor(action, opts).includes(role);
 }
 
 export function nextStage(stage: WoStage): WoStage | null {
@@ -46,8 +57,8 @@ export function nextStage(stage: WoStage): WoStage | null {
 }
 
 /** Actions available to a role on a work order, in display order. */
-export function availableActions(role: Role, wo: Pick<WorkOrder, "stage" | "status">): WoAction[] {
-  return (Object.keys(ACTION_RULES) as WoAction[]).filter((a) => canPerform(a, role, wo));
+export function availableActions(role: Role, wo: Pick<WorkOrder, "stage" | "status">, opts: WorkflowOptions = {}): WoAction[] {
+  return (Object.keys(ACTION_RULES) as WoAction[]).filter((a) => canPerform(a, role, wo, opts));
 }
 
 export class WorkflowError extends Error {
@@ -57,11 +68,40 @@ export class WorkflowError extends Error {
   }
 }
 
-export function assertCan(action: WoAction, role: Role, wo: Pick<WorkOrder, "stage" | "status">): void {
-  if (!canPerform(action, role, wo)) {
+export function assertCan(action: WoAction, role: Role, wo: Pick<WorkOrder, "stage" | "status">, opts: WorkflowOptions = {}): void {
+  if (!canPerform(action, role, wo, opts)) {
     const rule = ACTION_RULES[action];
     throw new WorkflowError(
-      `${rule.label} needs a ${rule.roles.join(" or ")} on an open work order in ${rule.stage}; this one is ${wo.status} in ${wo.stage}.`,
+      `${rule.label} needs a ${rolesFor(action, opts).join(" or ")} on an open work order in ${rule.stage}; this one is ${wo.status} in ${wo.stage}.`,
     );
   }
+}
+
+// ---------------------------------------------------------------- PM program
+
+/** PM program actions, outside the work order lifecycle. */
+export const PM_RULES = {
+  /** Create work orders for due PMs. */
+  generate: ["planner", "admin"],
+  /** Move a PM's due date. Every deferral needs a supervisor (decision TMX-013). */
+  defer: ["supervisor"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export function canPm(action: keyof typeof PM_RULES, role: Role): boolean {
+  return (PM_RULES[action] as readonly Role[]).includes(role);
+}
+
+// ---------------------------------------------------------------- Scheduling calendar
+
+/**
+ * Calendar actions. Who schedules is a site setting (TMX-015): an admin always
+ * can, plus the roles in `site.scheduler_roles`. Only an admin changes that list.
+ */
+export function canScheduleAt(role: Role, opts: WorkflowOptions): boolean {
+  return role === "admin" || (opts.schedulerRoles ?? ["supervisor"]).includes(role);
+}
+
+/** Moving a scheduled job to another day: open, in Execution, with a date. */
+export function canReschedule(role: Role, wo: Pick<WorkOrder, "stage" | "status" | "scheduled_date">, opts: WorkflowOptions): boolean {
+  return canScheduleAt(role, opts) && wo.status === "open" && wo.stage === "execution" && wo.scheduled_date !== null;
 }

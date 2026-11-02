@@ -1,11 +1,13 @@
 import "server-only";
 import type { Repository } from "@/lib/data/repository";
+import { daysBetween } from "@/lib/pm/program";
 import { formatAttribute } from "@/lib/taxonomy/assess";
 import type {
   Asset,
   AssetClassWithModes,
   AssetDetail,
   CableSpec,
+  PmScheduleRow,
   InventoryItem,
   Profile,
   WorkOrderDetail,
@@ -34,6 +36,9 @@ export interface SiteContext {
   route: AssetDetail["route"];
   /** Tray work: the cables routed through this section. */
   carriedCables: AssetDetail["carried_cables"];
+  /** The asset's PM schedule, so PMs due soon can be done in the same outage. */
+  pmSchedules: PmScheduleRow[];
+  today: string;
 }
 
 export async function buildSiteContext(repo: Repository, woId: string): Promise<SiteContext | null> {
@@ -86,6 +91,8 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
     vertical: site.vertical,
     route: detail?.route ?? [],
     carriedCables: detail?.carried_cables ?? [],
+    pmSchedules: asset ? await repo.listPmSchedules({ assetId: asset.id }) : [],
+    today: new Date().toISOString().slice(0, 10),
   };
 }
 
@@ -144,6 +151,16 @@ export function formatSiteContext(ctx: SiteContext): string {
     lines.push("", "## Cables routed through this tray section");
     if (!ctx.carriedCables.length) lines.push("None recorded.");
     for (const c of ctx.carriedCables) lines.push(`- ${c.floc} ${c.name} (${c.attributes.media ?? "?"})`);
+  }
+  if (ctx.pmSchedules.length) {
+    lines.push("", "## PM schedule on this asset (fold PMs due soon into this job if the asset comes out of service anyway)");
+    for (const s of ctx.pmSchedules) {
+      const days = daysBetween(ctx.today, s.next_due_on);
+      const when = days < 0 ? `OVERDUE by ${-days} days` : `due in ${days} days`;
+      lines.push(
+        `- ${s.task.code} ${s.task.title}: every ${s.interval_days} days, ${when} (${s.next_due_on}), ${s.task.est_hours} h ${s.task.craft}${s.task.requires_shutdown ? ", needs the asset out of service" : ""}. Addresses ${s.task.failure_mode_codes.join(", ")}.${s.open_wo ? ` Open work order ${s.open_wo.wo_number}.` : ""}`,
+      );
+    }
   }
   if (ctx.related.length) {
     lines.push("", "## Related equipment (same train or duty/standby set)");

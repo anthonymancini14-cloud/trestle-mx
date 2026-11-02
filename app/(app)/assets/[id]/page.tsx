@@ -3,12 +3,14 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { CableRoutePanel, CableSpecPanel, CarriedCablesPanel } from "@/components/assets/cable-panels";
 import { DataQualityBadge } from "@/components/assets/data-quality";
+import { DueBadge, intervalLabel, StrategyBadge } from "@/components/pm/pm-badges";
 import { CriticalityBadge, PriorityBadge, StageBadge } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Badge, EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
+import { checkSpares, daysBetween, dueState } from "@/lib/pm/program";
 import { assessAsset, formatAttribute, statusLabel } from "@/lib/taxonomy/assess";
-import { formatDate, formatHours } from "@/lib/utils";
+import { formatDate, formatDay, formatHours } from "@/lib/utils";
 
 export default async function AssetPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -20,7 +22,11 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
   const isCable = cls?.code === "CABLE";
   const isTray = cls?.code === "CABLE-TRAY";
   const partNumber = typeof asset.attributes.part_number === "string" ? asset.attributes.part_number : null;
-  const cableStock = isCable && partNumber ? (await repo.listInventory()).find((i) => i.part.part_number === partNumber) : undefined;
+  const [inventory, schedules, siteAssets] = await Promise.all([repo.listInventory(), repo.listPmSchedules({ assetId: asset.id }), repo.listAssets()]);
+  const cableStock = isCable && partNumber ? inventory.find((i) => i.part.part_number === partNumber) : undefined;
+  const today = new Date().toISOString().slice(0, 10);
+  const runToFailure = cls ? cls.run_to_failure.includes(asset.criticality) : false;
+  const spares = cls && asset.criticality === "A" ? checkSpares(cls, siteAssets.filter((a) => a.id === asset.id), inventory) : [];
   const assessment = assessAsset(asset, cls);
   const issueByKey = new Map(assessment.issues.map((i) => [i.spec.key, i]));
 
@@ -131,6 +137,64 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
           {isTray && <CarriedCablesPanel cables={asset.carried_cables} />}
+          <Panel>
+            <PanelHeader eyebrow="PM program" title="PM schedule" actions={<span className="font-mono text-xs text-tx-3">{schedules.length}</span>} />
+            {schedules.length === 0 ? (
+              <EmptyState>
+                {runToFailure
+                  ? `Run to failure at criticality ${asset.criticality}: no PM by design.`
+                  : cls
+                    ? "No PM tasks for this class and criticality."
+                    : "Classify this asset to give it a PM program."}
+              </EmptyState>
+            ) : (
+              <ul className="divide-y divide-line/60">
+                {schedules.map((s) => {
+                  const state = dueState(s.next_due_on, today);
+                  return (
+                    <li key={s.id} className="flex flex-wrap items-start gap-x-3 gap-y-1 px-4 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Mono className="text-[11px] text-tx-3">{s.task.code}</Mono>
+                          <StrategyBadge strategy={s.task.strategy} />
+                          <span className="text-xs text-tx-3">{intervalLabel(s.interval_days)}</span>
+                        </div>
+                        <div className="text-sm">{s.task.title}</div>
+                        <div className="text-xs text-tx-3">
+                          Addresses <span className="font-mono">{s.task.failure_mode_codes.join(" ")}</span> · last done {formatDay(s.last_done_on)}
+                          {s.deferrals.length > 0 && <span className="text-warn"> · deferred {s.deferrals.length}×</span>}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs">{formatDay(s.next_due_on)}</div>
+                        <DueBadge state={state} days={daysBetween(today, s.next_due_on)} />
+                        {s.open_wo && (
+                          <Link href={`/work-orders/${s.open_wo.id}`} className="block font-mono text-xs text-brass-bright hover:underline">
+                            {s.open_wo.wo_number}
+                          </Link>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {spares.length > 0 && (
+              <div className="border-t border-line px-4 py-2.5 text-xs">
+                <div className="mb-1 text-[11px] uppercase tracking-wider text-tx-3">Critical spares for this asset</div>
+                {spares.map((s) => (
+                  <div key={s.spare.id} className="flex items-center gap-2">
+                    <Mono className="text-xs">{s.part_number}</Mono>
+                    <span className="truncate text-tx-3">{s.description}</span>
+                    <span className={s.state === "ok" ? "ml-auto text-good" : "ml-auto text-bad"}>
+                      {s.available}/{s.spare.qty} {s.state === "ok" ? "on the shelf" : "short"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
           <Panel>
             <PanelHeader eyebrow="Work history" title="Work orders" actions={<span className="font-mono text-xs text-tx-3">{asset.history.length}</span>} />
             {asset.history.length === 0 ? (

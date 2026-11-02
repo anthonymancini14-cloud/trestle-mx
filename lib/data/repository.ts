@@ -4,10 +4,14 @@ import type {
   Asset,
   AssetClassWithModes,
   AssetDetail,
+  CalendarWorkOrder,
+  CrewMember,
   InventoryItem,
   Organization,
+  PmScheduleRow,
   Priority,
   Profile,
+  Role,
   Site,
   WoStage,
   WoType,
@@ -19,6 +23,15 @@ export interface WorkOrderFilter {
   stage?: WoStage;
   status?: "open" | "closed" | "rejected";
   assetId?: string;
+}
+
+export interface NewTimeOffInput {
+  profile_id: string;
+  starts_on: string;
+  ends_on: string;
+  /** Null for the whole shift. */
+  hours_per_day: number | null;
+  reason: string;
 }
 
 export interface NewWorkOrderInput {
@@ -55,6 +68,24 @@ export interface Repository {
   listAssetClasses(): Promise<AssetClassWithModes[]>;
 
   listInventory(): Promise<InventoryItem[]>;
+
+  /** The site's PM program: every PM task scheduled on every asset, with its open work order and deferrals. */
+  listPmSchedules(filter?: { assetId?: string }): Promise<PmScheduleRow[]>;
+  /** Create work orders for PMs due within the lead window (straight to Scheduling). Returns how many were created. */
+  generateDuePms(asOf: string, actorId: string): Promise<number>;
+  /** Move a PM's due date with a reason. Supervisors only (checked in the server action and, live, in the database). */
+  deferPm(scheduleId: string, toDate: string, reason: string, actorId: string): Promise<void>;
+
+  /** Technicians on the site roster with their shift and time off (calendar capacity). */
+  listCrew(): Promise<CrewMember[]>;
+  /** Open work orders (Identification to Execution) with their crew-hours by craft. */
+  listCalendarWork(): Promise<CalendarWorkOrder[]>;
+  /** Move a scheduled job to another day. Logged as a reschedule on the work order. */
+  rescheduleWorkOrder(woId: string, date: string, actorId: string, reason?: string): Promise<void>;
+  /** Admin only: which roles may schedule at this site. */
+  setSchedulerRoles(roles: Role[], actorId: string): Promise<void>;
+  addTimeOff(input: NewTimeOffInput, actorId: string): Promise<void>;
+  updateShift(profileId: string, shiftHours: number, workDays: number[], actorId: string): Promise<void>;
 
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;
   moveStage(woId: string, to: WoStage, actorId: string, note?: string): Promise<void>;

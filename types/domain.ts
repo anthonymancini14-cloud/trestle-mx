@@ -72,6 +72,8 @@ export interface Site {
   name: string;
   timezone: string;
   vertical: Vertical;
+  /** Roles that may schedule and move work on the calendar at this site. Admin always can (TMX-015). */
+  scheduler_roles: Role[];
 }
 
 export interface AreaCode {
@@ -162,10 +164,83 @@ export interface AssetClass {
   description: string;
   attributes: AttributeSpec[];
   is_active: boolean;
+  /** Criticalities at which this class is run to failure: no PM, and no coverage warning. */
+  run_to_failure: Criticality[];
+  /** Days within which the same failure mode on the same asset counts as a repeat failure; null is off. */
+  repeat_window_days: number | null;
+}
+
+export const PM_STRATEGIES = ["time_based", "condition_based", "failure_finding"] as const;
+export type PmStrategy = (typeof PM_STRATEGIES)[number];
+
+export const PM_STRATEGY_LABELS: Record<PmStrategy, string> = {
+  time_based: "Time-based",
+  condition_based: "Condition-based",
+  failure_finding: "Failure-finding",
+};
+
+/** A PM task in the class library: what to do, how often, for whom, and which failure modes it addresses. */
+export interface PmTask {
+  id: string;
+  class_id: string;
+  code: string;
+  title: string;
+  strategy: PmStrategy;
+  craft: Craft;
+  crew_size: number;
+  est_hours: number;
+  interval_days: number;
+  interval_days_crit_a: number | null;
+  criticalities: Criticality[];
+  failure_mode_codes: string[];
+  requires_shutdown: boolean;
+  acceptance_criteria: string | null;
+  /** True for tasks from the starter library that the customer has not tuned yet. */
+  is_starter_default: boolean;
+}
+
+/** A part each site must hold for its crit A assets of a class (optionally one model). */
+export interface ClassSpare {
+  id: string;
+  class_id: string;
+  part_id: string;
+  qty: number;
+  model: string | null;
 }
 
 export interface AssetClassWithModes extends AssetClass {
   failure_modes: FailureMode[];
+  pm_tasks: PmTask[];
+  spares: ClassSpare[];
+}
+
+/** One PM task scheduled on one asset: the maintenance index row. */
+export interface PmSchedule {
+  id: string;
+  site_id: string;
+  asset_id: string;
+  pm_task_id: string;
+  interval_days: number;
+  last_done_on: string | null;
+  next_due_on: string;
+  is_active: boolean;
+}
+
+export interface PmDeferral {
+  id: string;
+  schedule_id: string;
+  from_due_on: string;
+  to_due_on: string;
+  reason: string;
+  approved_by: string | null;
+  created_at: string;
+}
+
+export interface PmScheduleRow extends PmSchedule {
+  asset: Pick<Asset, "id" | "floc" | "name" | "criticality">;
+  task: PmTask;
+  open_wo: Pick<WorkOrder, "id" | "wo_number" | "stage"> | null;
+  deferrals: (PmDeferral & { approver_name: string | null })[];
 }
 
 export interface WorkOrder {
@@ -188,6 +263,8 @@ export interface WorkOrder {
   actual_hours: number | null;
   plan_summary: string | null;
   debrief: string | null;
+  /** Set when the work order was generated from a PM schedule. */
+  pm_schedule_id: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -215,6 +292,7 @@ export type WoEventType =
   | "task_completed"
   | "part_issued"
   | "closed"
+  | "rescheduled"
   | "note";
 
 export interface WoEvent {
@@ -334,4 +412,67 @@ export type RouteStep = Pick<CableRouteSegment, "seq" | "note"> & {
 
 export interface InventoryItem extends InventoryRow {
   part: Part;
+}
+
+// ---------------------------------------------------------------- Scheduling
+
+export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "operations", "contractor"];
+
+export const CRAFT_LABELS: Record<Craft, string> = {
+  mechanical: "Mechanical",
+  electrical: "Electrical",
+  instrumentation: "Instrumentation",
+  operations: "Operations",
+  contractor: "Contractor",
+};
+
+/** A technician's regular shift at a site: hours per shift and the weekdays worked (0 = Sunday). */
+export interface CrewShift {
+  id: string;
+  site_id: string;
+  profile_id: string;
+  shift_hours: number;
+  work_days: number[];
+}
+
+/** Time a technician is away. `hours_per_day` null means the whole shift. Inclusive dates. */
+export interface TimeOff {
+  id: string;
+  site_id: string;
+  profile_id: string;
+  starts_on: string;
+  ends_on: string;
+  hours_per_day: number | null;
+  reason: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** A technician on the site roster, with the shift and time off that set their capacity (TMX-016). */
+export interface CrewMember extends Profile {
+  shift: CrewShift | null;
+  time_off: TimeOff[];
+}
+
+/** An open work order as the scheduling calendar needs it. */
+export interface CalendarWorkOrder
+  extends Pick<
+    WorkOrder,
+    | "id"
+    | "wo_number"
+    | "title"
+    | "stage"
+    | "priority"
+    | "wo_type"
+    | "requires_shutdown"
+    | "scheduled_date"
+    | "assigned_to"
+    | "estimated_hours"
+    | "pm_schedule_id"
+    | "created_at"
+  > {
+  asset: Pick<Asset, "id" | "floc" | "name" | "criticality"> | null;
+  assignee: Pick<Profile, "id" | "full_name" | "craft"> | null;
+  /** Crew-hours by craft from the job plan (est hours × crew size). Empty until the job is planned. */
+  craft_hours: Partial<Record<Craft, number>>;
 }

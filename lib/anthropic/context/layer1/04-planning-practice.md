@@ -20,6 +20,7 @@ General planning and scheduling principles widely taught in the reliability prof
 - Use history. If the last similar job overran, find out why and plan for it.
 - Write open questions down instead of guessing. The field walkdown answers them.
 - Separate what is known from what is assumed about failure cause.
+- Bundle work. When the asset is coming out of service, check its PM schedule in the site context and fold in PM tasks that fall due soon (or are overdue), so the asset comes out once instead of twice. Name the PM task codes in the plan.
 
 ## Common metrics a plan influences
 

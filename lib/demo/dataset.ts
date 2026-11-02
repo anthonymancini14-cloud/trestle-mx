@@ -23,19 +23,28 @@ import {
   DC_SITE,
   DC_WO_DEFS,
 } from "./seed-datacenter";
+import { addDays, applicableTasks, effectiveInterval, nextDueAfter, PM_LEAD_DAYS } from "@/lib/pm/program";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
+import { CLASS_PM, pmTaskCode } from "@/lib/taxonomy/pm-library";
 import { WO_STAGES } from "@/types/domain";
 import type {
   AreaCode,
   Asset,
   AssetClass,
+  AssetClassWithModes,
   CableRouteSegment,
+  ClassSpare,
+  CrewShift,
   FailureMode,
   InventoryRow,
   Organization,
   Part,
+  PmDeferral,
+  PmSchedule,
+  PmTask,
   Profile,
   Site,
+  TimeOff,
   WoEvent,
   WoPart,
   WoTask,
@@ -55,6 +64,12 @@ export interface Dataset {
   siteAccess: SiteAccess[];
   assetClasses: AssetClass[];
   failureModes: FailureMode[];
+  pmTasks: PmTask[];
+  classSpares: ClassSpare[];
+  pmSchedules: PmSchedule[];
+  pmDeferrals: PmDeferral[];
+  crewShifts: CrewShift[];
+  timeOff: TimeOff[];
   assets: Asset[];
   cableRoutes: CableRouteSegment[];
   parts: Part[];
@@ -125,11 +140,20 @@ function buildCableRoutes(): CableRouteSegment[] {
   );
 }
 
-/** The starter class library as the organization's rows. */
-export function buildClassLibrary(orgId: string): { assetClasses: AssetClass[]; failureModes: FailureMode[] } {
+/** The starter class library as the organization's rows: classes, failure modes, PM tasks and critical spares. */
+export function buildClassLibrary(orgId: string): {
+  assetClasses: AssetClass[];
+  failureModes: FailureMode[];
+  pmTasks: PmTask[];
+  classSpares: ClassSpare[];
+} {
   const assetClasses: AssetClass[] = [];
   const failureModes: FailureMode[] = [];
+  const pmTasks: PmTask[] = [];
+  const classSpares: ClassSpare[] = [];
   let modeN = 0;
+  let taskN = 0;
+  let spareN = 0;
   for (const def of ASSET_CLASS_LIBRARY) {
     const id = classId(def.code);
     assetClasses.push({
@@ -142,12 +166,82 @@ export function buildClassLibrary(orgId: string): { assetClasses: AssetClass[]; 
       description: def.description,
       attributes: def.attributes.map((a) => ({ ...a })),
       is_active: true,
+      run_to_failure: [...(CLASS_PM[def.code]?.runToFailure ?? [])],
+      repeat_window_days: CLASS_PM[def.code]?.repeatWindowDays === undefined ? 90 : CLASS_PM[def.code].repeatWindowDays!,
     });
     for (const m of def.failureModes) {
       failureModes.push({ id: seedId("failureMode", ++modeN), class_id: id, ...m });
     }
+    for (const task of CLASS_PM[def.code]?.tasks ?? []) {
+      pmTasks.push({
+        id: seedId("pmTask", ++taskN),
+        class_id: id,
+        code: pmTaskCode(def.code, task.n),
+        title: task.title,
+        strategy: task.strategy,
+        craft: task.craft,
+        crew_size: task.crew ?? 1,
+        est_hours: task.hours,
+        interval_days: task.intervalDays,
+        interval_days_crit_a: task.intervalDaysCritA ?? null,
+        criticalities: [...task.criticalities],
+        failure_mode_codes: [...task.modes],
+        requires_shutdown: task.shutdown ?? false,
+        acceptance_criteria: task.accept ?? null,
+        is_starter_default: true,
+      });
+    }
+    for (const s of CLASS_PM[def.code]?.spares ?? []) {
+      classSpares.push({ id: seedId("classSpare", ++spareN), class_id: id, part_id: partId(s.pn), qty: s.qty, model: s.model ?? null });
+    }
   }
-  return { assetClasses, failureModes };
+  return { assetClasses, failureModes, pmTasks, classSpares };
+}
+
+/** Stable pseudo-random number from a string, so seeded PM history is the same on every build. */
+function hash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/** Seeded deferrals: [asset, task, days deferred, reason, approver first name]. */
+const SEED_DEFERRALS: [string, string, number, string, string][] = [
+  ["CFD-CUP-CT-01", "FAN-CT-PM02", 21, "Hold until chiller CH-02 is back in service; the tower is needed at full capacity.", "Hana"],
+  ["BRP-INT-SCR-101", "SCREEN-TWS-PM03", 30, "River level too high to dewater the intake bay safely; reschedule after the spring runoff.", "Lena"],
+];
+
+/**
+ * Technician shifts: [first name, hours per shift, weekdays worked (0 = Sunday)].
+ * Basalt Ridge runs a weekday plant crew on 10s and 8s; Cedar Flats staggers
+ * its 10-hour shifts so a mechanic covers the weekend.
+ */
+const SEED_SHIFTS: [string, number, number[]][] = [
+  ["Jordan", 10, [1, 2, 3, 4]],
+  ["Devon", 10, [2, 3, 4, 5]],
+  ["Alex", 8, [1, 2, 3, 4, 5]],
+  ["Riley", 8, [1, 2, 3, 4, 5]],
+  ["Tasha", 10, [1, 2, 3, 4]],
+  ["Mateo", 10, [0, 4, 5, 6]],
+  ["Kai", 10, [2, 3, 4, 5]],
+  ["Rafael", 8, [1, 2, 3, 4, 5]],
+];
+
+/** Time off: [first name, starts in days, ends in days, hours per day (null = whole shift), reason]. */
+const SEED_TIME_OFF: [string, number, number, number | null, string][] = [
+  ["Jordan", 2, 3, null, "Vacation"],
+  ["Kai", 1, 1, 4, "NFPA 70E refresher"],
+  ["Alex", 8, 12, null, "Vacation"],
+  ["Tasha", 9, 9, 5, "Vendor UPS training"],
+];
+
+/** The first day on or after `date` that the person works, so seeded jobs never land on a day off. */
+function onShiftDay(firstName: string | undefined, date: string): string {
+  const days = SEED_SHIFTS.find(([name]) => name === firstName)?.[2];
+  if (!days) return date;
+  let d = date;
+  while (!days.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) d = addDays(d, 1);
+  return d;
 }
 
 /** Expand the seed definitions into normalized rows with real timestamps. */
@@ -166,6 +260,26 @@ export function buildDataset(now: Date = new Date()): Dataset {
   let taskN = 0;
   let partN = 0;
   let eventN = 0;
+
+  const library = buildClassLibrary(ORG.id);
+  const classesWithTasks: (AssetClass & Pick<AssetClassWithModes, "pm_tasks">)[] = library.assetClasses.map((c) => ({
+    ...c,
+    pm_tasks: library.pmTasks.filter((t) => t.class_id === c.id),
+  }));
+  // One schedule per asset per applicable PM task: the maintenance index.
+  const scheduleKeys: { id: string; asset: Asset; task: PmTask; interval: number }[] = [];
+  for (const asset of ALL_ASSETS) {
+    const cls = classesWithTasks.find((c) => c.id === asset.class_id);
+    if (!cls) continue;
+    for (const task of applicableTasks(cls, asset.criticality)) {
+      scheduleKeys.push({ id: seedId("pmSchedule", scheduleKeys.length + 1), asset, task, interval: effectiveInterval(task, asset.criticality) });
+    }
+  }
+  const scheduleFor = (floc: string | null, code: string) => {
+    const key = scheduleKeys.find((k) => k.asset.floc === floc && k.task.code === code);
+    if (!key) throw new Error(`No PM schedule for ${floc} ${code}`);
+    return key.id;
+  };
 
   let woN = 0;
   for (const { site, woDefs, crew } of [...SITE_SEEDS].reverse()) {
@@ -254,7 +368,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
         assigned_to: def.assignedTo ? personId(def.assignedTo) : null,
         scheduled_date:
           def.scheduledInDays !== undefined
-            ? dateIn(def.scheduledInDays)
+            ? onShiftDay(def.assignedTo, dateIn(def.scheduledInDays))
             : stageIndex >= WO_STAGES.indexOf("execution")
               ? at(stageDaysAgo(WO_STAGES.indexOf("execution"))).slice(0, 10)
               : null,
@@ -262,6 +376,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
         actual_hours: def.actualHours ?? null,
         plan_summary: def.planSummary ?? null,
         debrief: status === "closed" ? def.debrief ?? null : null,
+        pm_schedule_id: def.pm ? scheduleFor(def.floc, def.pm) : null,
         created_at: createdAt,
         updated_at: closedAt ?? at(Math.max(stageDaysAgo(stageIndex) - (status === "rejected" ? 1 : 0), 0)),
         closed_at: closedAt,
@@ -303,13 +418,84 @@ export function buildDataset(now: Date = new Date()): Dataset {
     }
   }
 
+  // PM schedule dates: from linked work orders where there are any, otherwise a
+  // stable spread across each interval, with a few overdue for realism.
+  const today = now.toISOString().slice(0, 10);
+  const pmSchedules: PmSchedule[] = scheduleKeys.map(({ id, asset, task, interval }) => {
+    const linked = workOrders.filter((w) => w.pm_schedule_id === id);
+    const lastClosed = linked.filter((w) => w.status === "closed").sort((a, b) => b.closed_at!.localeCompare(a.closed_at!))[0];
+    const open = linked.find((w) => w.status === "open");
+    let lastDone: string | null;
+    let nextDue: string;
+    if (open) {
+      // Generated inside the lead window before it fell due.
+      nextDue = addDays(open.created_at.slice(0, 10), PM_LEAD_DAYS);
+      lastDone = lastClosed ? lastClosed.closed_at!.slice(0, 10) : addDays(nextDue, -interval);
+    } else if (lastClosed) {
+      lastDone = lastClosed.closed_at!.slice(0, 10);
+      nextDue = nextDueAfter(lastDone, interval);
+    } else {
+      const h = hash(`${asset.floc}|${task.code}`);
+      const overdue = h % 29 === 0;
+      const ago = overdue ? interval + 3 + (h % 18) : Math.floor((interval * (h % 1000)) / 1000);
+      lastDone = addDays(today, -ago);
+      nextDue = nextDueAfter(lastDone, interval);
+      // Nothing is done before the asset exists: commissioning is the baseline.
+      if (asset.install_date && lastDone < asset.install_date) {
+        lastDone = null;
+        nextDue = nextDueAfter(asset.install_date, interval);
+      }
+    }
+    return { id, site_id: asset.site_id, asset_id: asset.id, pm_task_id: task.id, interval_days: interval, last_done_on: lastDone, next_due_on: nextDue, is_active: true };
+  });
+  const pmDeferrals: PmDeferral[] = SEED_DEFERRALS.map(([floc, code, days, reason, approver], i) => {
+    const schedule = pmSchedules.find((s) => s.id === scheduleFor(floc, code))!;
+    const from = addDays(today, -2);
+    schedule.next_due_on = addDays(from, days);
+    schedule.last_done_on = addDays(from, -schedule.interval_days);
+    return {
+      id: seedId("pmDeferral", i + 1),
+      schedule_id: schedule.id,
+      from_due_on: from,
+      to_due_on: schedule.next_due_on,
+      reason,
+      approved_by: personId(approver),
+      created_at: at(3),
+    };
+  });
+
+  const siteOf = (profileId: string) => SITE_ACCESS.find((a) => a.user_id === profileId)!.site_id;
+  const crewShifts: CrewShift[] = SEED_SHIFTS.map(([name, hours, days], i) => ({
+    id: seedId("crewShift", i + 1),
+    site_id: siteOf(personId(name)),
+    profile_id: personId(name),
+    shift_hours: hours,
+    work_days: days,
+  }));
+  const timeOff: TimeOff[] = SEED_TIME_OFF.map(([name, from, to, hours, reason], i) => ({
+    id: seedId("timeOff", i + 1),
+    site_id: siteOf(personId(name)),
+    profile_id: personId(name),
+    starts_on: dateIn(from),
+    ends_on: dateIn(to),
+    hours_per_day: hours,
+    reason,
+    created_by: null,
+    created_at: at(5),
+  }));
+
   return {
     org: ORG,
-    sites: DEMO_SITES,
+    // Copies, so a settings change in the demo store never edits the seed.
+    sites: DEMO_SITES.map((site) => ({ ...site, scheduler_roles: [...site.scheduler_roles] })),
     areas: [...AREAS, ...DC_AREAS],
     profiles: ALL_PROFILES,
     siteAccess: SITE_ACCESS,
-    ...buildClassLibrary(ORG.id),
+    ...library,
+    pmSchedules,
+    pmDeferrals,
+    crewShifts,
+    timeOff,
     assets: ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
     cableRoutes: buildCableRoutes(),
     parts: ALL_PARTS,

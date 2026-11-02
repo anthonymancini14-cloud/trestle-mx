@@ -95,6 +95,8 @@ describe("assessAsset", () => {
     verticals: ["industrial_utility"],
     description: "Test class",
     is_active: true,
+    run_to_failure: [],
+    repeat_window_days: 90,
     attributes: [
       { key: "power", label: "Power", type: "number", unit: "hp", required: true },
       { key: "seal", label: "Seal", type: "enum", options: ["Packing", "Mechanical"], required: true },

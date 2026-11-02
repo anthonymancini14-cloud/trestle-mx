@@ -4,7 +4,7 @@ AI-native CMMS for industrial, utility and data center maintenance. Public portf
 
 ## Hard rules
 
-- **Fictional data only.** The demo sites are invented: Cedar Flats Data Center (default) and Basalt Ridge Plant, both run by the fictional Northfork Infrastructure. Never add a real employer, site, person, or the pulp/paper vertical. `tests/demo-data.test.ts` fails the build if banned terms appear.
+- **Fictional data only.** The demo sites are invented: Cedar Flats Data Center (default) and Basalt Ridge Plant. Never add a real employer, site, person, or the pulp/paper vertical. `tests/demo-data.test.ts` fails the build if banned terms appear.
 - **Verticals: industrial/utility and data center, set per site.** Utility: water, steam, power, compressed air, rotating equipment. Data center: UPS and batteries, switchgear, generators, chillers, CRAH/CRAC, liquid cooling, BMS/EPMS. The core (lifecycle, roles, Planning Mode, RLS) is vertical-neutral; vertical content lives in Layer 2 context packs and demo data. Decision TMX-002.
 - **Trestle branding.** Navy / brass / steel palette in `app/globals.css`. Logo at `public/trestle-mark.png`.
 - **Locked stack:** Next.js (App Router), TypeScript strict, Tailwind + shadcn-style primitives, Supabase, Claude API (`claude-sonnet-5-5` via `ANTHROPIC_MODEL`), Vercel, pnpm. Don't swap libraries without asking.

@@ -1,11 +1,17 @@
 import "server-only";
 import { buildDataset, DEFAULT_DEMO_SITE_ID, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
-import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import { dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
+import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
+  CalendarWorkOrder,
+  Craft,
+  CrewMember,
   InventoryItem,
+  PmScheduleRow,
+  Role,
   Site,
   WoEvent,
   WoStage,
@@ -135,6 +141,8 @@ export class DemoRepository implements Repository {
       .map((c) => ({
         ...c,
         failure_modes: db.failureModes.filter((m) => m.class_id === c.id).sort((a, b) => a.code.localeCompare(b.code)),
+        pm_tasks: db.pmTasks.filter((pt) => pt.class_id === c.id).sort((a, b) => a.code.localeCompare(b.code)),
+        spares: db.classSpares.filter((s) => s.class_id === c.id),
       }))
       .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
   }
@@ -202,6 +210,7 @@ export class DemoRepository implements Repository {
       actual_hours: null,
       plan_summary: null,
       debrief: null,
+      pm_schedule_id: null,
       created_at: nowIso(),
       updated_at: nowIso(),
       closed_at: null,
@@ -323,5 +332,163 @@ export class DemoRepository implements Repository {
     wo.closed_at = nowIso();
     wo.updated_at = nowIso();
     logEvent(db, { wo_id: woId, event_type: "closed", from_stage: "closure", to_stage: null, note: debrief, actor_id: actorId });
+    // A completed PM restarts its interval from today.
+    const schedule = wo.pm_schedule_id ? db.pmSchedules.find((s) => s.id === wo.pm_schedule_id) : undefined;
+    if (schedule) {
+      schedule.last_done_on = wo.closed_at.slice(0, 10);
+      schedule.next_due_on = nextDueAfter(schedule.last_done_on, schedule.interval_days);
+    }
+  }
+
+  async listCrew(): Promise<CrewMember[]> {
+    const db = store();
+    return (await this.listProfiles())
+      .filter((p) => p.role === "technician" && p.is_active)
+      .map((p) => ({
+        ...p,
+        shift: db.crewShifts.find((c) => c.site_id === this.siteId && c.profile_id === p.id) ?? null,
+        time_off: db.timeOff
+          .filter((t) => t.site_id === this.siteId && t.profile_id === p.id)
+          .sort((a, b) => a.starts_on.localeCompare(b.starts_on)),
+      }));
+  }
+
+  async listCalendarWork(): Promise<CalendarWorkOrder[]> {
+    const db = store();
+    return db.workOrders
+      .filter((w) => w.site_id === this.siteId && w.status === "open" && w.stage !== "closure")
+      .map((w) => {
+        const item = toListItem(db, w);
+        const assignee = w.assigned_to ? db.profiles.find((p) => p.id === w.assigned_to) : undefined;
+        const craft_hours: Partial<Record<Craft, number>> = {};
+        for (const t of db.tasks.filter((t) => t.wo_id === w.id)) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        return {
+          id: w.id,
+          wo_number: w.wo_number,
+          title: w.title,
+          stage: w.stage,
+          priority: w.priority,
+          wo_type: w.wo_type,
+          requires_shutdown: w.requires_shutdown,
+          scheduled_date: w.scheduled_date,
+          assigned_to: w.assigned_to,
+          estimated_hours: w.estimated_hours,
+          pm_schedule_id: w.pm_schedule_id,
+          created_at: w.created_at,
+          asset: item.asset,
+          assignee: assignee ? { id: assignee.id, full_name: assignee.full_name, craft: assignee.craft } : null,
+          craft_hours,
+        };
+      });
+  }
+
+  async rescheduleWorkOrder(woId: string, date: string, actorId: string, reason?: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open" || wo.stage !== "execution" || !wo.scheduled_date) throw new Error("Only scheduled work can be moved");
+    if (wo.scheduled_date === date) return;
+    const note = `${wo.scheduled_date} → ${date}${reason ? `: ${reason}` : ""}`;
+    wo.scheduled_date = date;
+    wo.updated_at = nowIso();
+    logEvent(db, { wo_id: woId, event_type: "rescheduled", from_stage: null, to_stage: null, note, actor_id: actorId });
+  }
+
+  async setSchedulerRoles(roles: Role[], _actorId: string) {
+    const site = store().sites.find((s) => s.id === this.siteId);
+    if (!site) throw new Error("Site not found");
+    site.scheduler_roles = roles.filter((r) => r !== "admin");
+  }
+
+  async addTimeOff(input: NewTimeOffInput, actorId: string) {
+    const db = store();
+    if (!db.crewShifts.some((c) => c.site_id === this.siteId && c.profile_id === input.profile_id)) throw new Error("Not on this site's roster");
+    db.timeOff.push({ ...input, id: newId(), site_id: this.siteId, created_by: actorId, created_at: nowIso() });
+  }
+
+  async updateShift(profileId: string, shiftHours: number, workDays: number[], _actorId: string) {
+    const db = store();
+    const shift = db.crewShifts.find((c) => c.site_id === this.siteId && c.profile_id === profileId);
+    if (shift) {
+      shift.shift_hours = shiftHours;
+      shift.work_days = [...workDays].sort();
+    } else {
+      if (!db.siteAccess.some((a) => a.site_id === this.siteId && a.user_id === profileId)) throw new Error("Not at this site");
+      db.crewShifts.push({ id: newId(), site_id: this.siteId, profile_id: profileId, shift_hours: shiftHours, work_days: [...workDays].sort() });
+    }
+  }
+
+  async listPmSchedules(filter: { assetId?: string } = {}): Promise<PmScheduleRow[]> {
+    const db = store();
+    return db.pmSchedules
+      .filter((s) => s.site_id === this.siteId && (!filter.assetId || s.asset_id === filter.assetId))
+      .map((s) => {
+        const asset = db.assets.find((a) => a.id === s.asset_id)!;
+        const open = db.workOrders.find((w) => w.pm_schedule_id === s.id && w.status === "open");
+        return {
+          ...s,
+          asset: { id: asset.id, floc: asset.floc, name: asset.name, criticality: asset.criticality },
+          task: db.pmTasks.find((t) => t.id === s.pm_task_id)!,
+          open_wo: open ? { id: open.id, wo_number: open.wo_number, stage: open.stage } : null,
+          deferrals: db.pmDeferrals
+            .filter((d) => d.schedule_id === s.id)
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .map((d) => ({ ...d, approver_name: db.profiles.find((p) => p.id === d.approved_by)?.full_name ?? null })),
+        };
+      })
+      .sort((a, b) => a.next_due_on.localeCompare(b.next_due_on) || a.asset.floc.localeCompare(b.asset.floc));
+  }
+
+  async generateDuePms(asOf: string, actorId: string): Promise<number> {
+    const db = store();
+    let created = 0;
+    for (const row of await this.listPmSchedules()) {
+      if (!row.is_active || row.open_wo) continue;
+      const state = dueState(row.next_due_on, asOf, PM_LEAD_DAYS);
+      if (state !== "overdue" && state !== "due") continue;
+      const plan = pmWorkPlan(row.task, row.asset.floc);
+      const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+      const id = newId();
+      db.workOrders.push({
+        id,
+        site_id: this.siteId,
+        wo_number: `WO-26-${next}`,
+        title: `PM ${row.task.code}: ${row.task.title}`,
+        description: `Preventive maintenance from the PM program, due ${row.next_due_on}. Addresses failure modes ${row.task.failure_mode_codes.join(", ")}.`,
+        asset_id: row.asset_id,
+        wo_type: "preventive",
+        // Routine PMs are P3; an overdue PM on a crit A asset is P2.
+        priority: row.asset.criticality === "A" && state === "overdue" ? 2 : 3,
+        stage: "scheduling",
+        status: "open",
+        requires_shutdown: plan.requires_shutdown,
+        reported_by: actorId,
+        planner_id: actorId,
+        assigned_to: null,
+        scheduled_date: null,
+        estimated_hours: plan.tasks.reduce((s, t) => s + t.est_hours * t.crew_size, 0),
+        actual_hours: null,
+        plan_summary: plan.summary,
+        debrief: null,
+        pm_schedule_id: row.id,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        closed_at: null,
+      });
+      for (const step of plan.tasks) db.tasks.push({ ...step, id: newId(), wo_id: id, is_complete: false });
+      logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: "scheduling", note: `Generated from PM schedule; due ${row.next_due_on}`, actor_id: actorId });
+      created += 1;
+    }
+    return created;
+  }
+
+  async deferPm(scheduleId: string, toDate: string, reason: string, actorId: string) {
+    const db = store();
+    const schedule = db.pmSchedules.find((s) => s.id === scheduleId && s.site_id === this.siteId);
+    if (!schedule) throw new Error("PM schedule not found");
+    if (toDate <= schedule.next_due_on) throw new Error("The new date must be after the current due date");
+    db.pmDeferrals.push({ id: newId(), schedule_id: scheduleId, from_due_on: schedule.next_due_on, to_due_on: toDate, reason, approved_by: actorId, created_at: nowIso() });
+    const open = db.workOrders.find((w) => w.pm_schedule_id === scheduleId && w.status === "open");
+    if (open) logEvent(db, { wo_id: open.id, event_type: "note", from_stage: null, to_stage: null, note: `PM deferred from ${schedule.next_due_on} to ${toDate}: ${reason}`, actor_id: actorId });
+    schedule.next_due_on = toDate;
   }
 }
