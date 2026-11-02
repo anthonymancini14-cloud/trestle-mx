@@ -51,6 +51,7 @@ export const DC_PROFILES: Profile[] = [
   { id: seedId("profile", 107), full_name: "Rafael Ortiz", role: "technician", craft: "contractor", is_active: true },
   { id: seedId("profile", 108), full_name: "Dana Price", role: "storeroom", craft: null, is_active: true },
   { id: seedId("profile", 109), full_name: "Priya Shah", role: "technician", craft: "process_controls", is_active: true },
+  { id: seedId("profile", 110), full_name: "Sean Park", role: "operator", craft: null, is_active: true },
 ];
 
 // FLOCs: CFD-<area>-<tag>. Cables use CBL-nnnn; tray sections CT-x. Labels on
@@ -400,6 +401,19 @@ export const DC_WO_DEFS: WoDef[] = [
     reportedBy: "Kai", assignedTo: "Mateo", createdDaysAgo: 40, estHours: 3, actualHours: 2.5,
     debrief: "EC fan module 3 failed on bearing. Replaced from stock and verified airflow. The other fans are at 41,000 run hours; recommend a fan replacement program by run hours.",
     parts: [{ pn: "MX-FAN-CRAH-EC", qty: 1, used: 1, status: "issued" }],
+    trouble: {
+      findings: [
+        { at: 1, by: "Mateo", test: "Fan 3 rotation and current", value: 0, unit: "A", spec: "About 4.2 A at 70% speed", result: "fail", note: "Fan seized; bearing noise when turned by hand." },
+        { at: 1.5, by: "Mateo", test: "Run hours on the remaining fans", value: 41000, unit: "h", spec: "Bearing life about 50,000 h", result: "info" },
+      ],
+      resolution: {
+        at: 3, by: "Mateo", mode: "BRD", mechanism: "2.4", cause: "3.4",
+        why: "EC fan module 3 bearing wore out at end of life and seized.",
+        remedy: "Replaced EC fan module 3 from stock.",
+        verification: "Unit airflow back to 100% of design; supply air on setpoint within 10 minutes.", verified: true,
+        review: "none_taken", supportedBy: [0],
+      },
+    },
   },
   // A WCE that couldn't be closed: the humidity sensor needed a part with a
   // long lead time and didn't affect cooling, so it was written up under its
@@ -446,6 +460,14 @@ export const DC_WO_DEFS: WoDef[] = [
       { pn: "MX-CDU-STRN-50", qty: 1, status: "kitted" },
       { pn: "MX-CDU-PG25-5G", qty: 1, status: "kitted" },
     ],
+    trouble: {
+      actions: [
+        { at: -0.5, by: "Sean", conditions: "CDU-01 strainer DP alarm at 9 psi; row A supply 1 °F above setpoint.", action: "Confirmed CDU-02 running and able to carry row A; logged the alarm.", result: "No change on CDU-01; row A stable." },
+      ],
+      findings: [
+        { at: 1, by: "Mateo", test: "CDU-01 secondary strainer differential pressure", value: 9.2, unit: "psi", spec: "Alarm at 6 psi; clean under 3 psi", result: "fail" },
+      ],
+    },
   },
   // ---------------- Scheduling ----------------
   {

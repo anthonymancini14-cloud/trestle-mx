@@ -6,12 +6,13 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { DEMO_SITE_COOKIE, DEMO_USER_COOKIE, SITE_COOKIE, demoProfileFor, getViewer } from "@/lib/auth/viewer";
 import { isLiveMode } from "@/lib/config";
+import { evidenceBlocker, resolutionProblems } from "@/lib/troubleshooting";
 import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canAddWce, canDefer, canPm, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
-import { ROLES, type WorkOrderDetail } from "@/types/domain";
+import { assertCan, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
+import { FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
 
 export type ActionResult = { ok: true } | { ok: false, error: string };
 
@@ -101,7 +102,7 @@ export async function closeWorkOrder(woId: string, hours: number, debrief: strin
     return { ok: false, error: "Enter actual hours and a debrief of at least a sentence: it feeds the next plan." } satisfies ActionResult;
   }
   return withWorkOrder(woId, "close", async ({ repo, profile, wo }) => {
-    const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn));
+    const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn)) ?? evidenceBlocker(wo, (await repo.getTroubleshooting(woId)).resolutions);
     if (blocker) throw new WorkflowError(blocker);
     await repo.closeWorkOrder(woId, parsed.data.hours, parsed.data.debrief, profile.id);
   });
@@ -228,6 +229,114 @@ export async function deferPm(input: { scheduleId: string; toDate: string; reaso
     if (message.startsWith("Something")) console.error("Defer PM failed", error);
     return { ok: false, error: message };
   }
+}
+
+// ---------------------------------------------------------------- troubleshooting record
+
+/** Load the work order, check who may add this kind of entry, run it, refresh. */
+async function withRecord(woId: string, kind: Parameters<typeof canRecord>[0], run: (ctx: Awaited<ReturnType<typeof getViewer>>) => Promise<void>): Promise<ActionResult> {
+  try {
+    const viewer = await getViewer();
+    const wo = await viewer.repo.getWorkOrder(woId);
+    if (!wo) return { ok: false, error: "Work order not found." };
+    if (!canRecord(kind, viewer.profile.role, wo, viewer.profile.id)) {
+      const who: Record<typeof kind, string> = {
+        operator_action: "Operator actions are recorded by operators (or a supervisor) on open work.",
+        finding: "Findings are logged by technicians and supervisors on open work.",
+        resolution: "The resolution is recorded by a technician or supervisor once the work is in Execution or Closure.",
+        addendum: "Addenda are added to closed work by a supervisor, planner, admin, or the technician who worked it.",
+      };
+      return { ok: false, error: who[kind] };
+    }
+    await run(viewer);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof WorkflowError) return { ok: false, error: error.message };
+    console.error(`Record ${kind} failed`, error);
+    return { ok: false, error: "Something went wrong saving that entry." };
+  }
+}
+
+const text = (min: number, msg: string) => z.string().trim().min(min, msg);
+const optionalText = z.string().trim().max(2000).optional().transform((v) => (v ? v : null));
+
+const operatorActionSchema = z.object({
+  conditions: text(3, "What was the equipment doing (running state, alarms, readings)?"),
+  action: text(3, "What did you do?"),
+  result: text(2, "What happened after?"),
+  ranMinutes: z.number().int().min(0).max(100000).nullable(),
+  correctsId: z.string().nullable(),
+});
+
+export async function addOperatorAction(woId: string, input: z.input<typeof operatorActionSchema>): Promise<ActionResult> {
+  const parsed = operatorActionSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the entry." };
+  const v = parsed.data;
+  return withRecord(woId, "operator_action", ({ repo, profile }) =>
+    repo.addOperatorAction(woId, { conditions: v.conditions, action: v.action, result: v.result, ran_minutes: v.ranMinutes, corrects_id: v.correctsId }, profile.id),
+  );
+}
+
+const findingSchema = z.object({
+  test: text(3, "Name the test, measurement or inspection."),
+  value: z.number().finite().nullable(),
+  unit: optionalText,
+  spec: optionalText,
+  result: z.enum(FINDING_RESULTS),
+  note: optionalText,
+  correctsId: z.string().nullable(),
+});
+
+export async function addFinding(woId: string, input: z.input<typeof findingSchema>): Promise<ActionResult> {
+  const parsed = findingSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the finding." };
+  const v = parsed.data;
+  return withRecord(woId, "finding", ({ repo, profile }) =>
+    repo.addFinding(woId, { test: v.test, value: v.value, unit: v.unit, spec: v.spec, result: v.result, note: v.note, corrects_id: v.correctsId }, profile.id),
+  );
+}
+
+const resolutionSchema = z.object({
+  noFaultFound: z.boolean(),
+  failureMode: z.string().nullable(),
+  mechanism: z.string().nullable(),
+  cause: z.string().nullable(),
+  findingIds: z.array(z.string()),
+  causeNarrative: z.string(),
+  remedy: z.string(),
+  verification: z.string().nullable(),
+  verificationPassed: z.boolean().nullable(),
+  operatorReview: z.enum(OPERATOR_REVIEWS),
+  operatorReviewNote: z.string().nullable(),
+});
+
+export async function recordResolution(woId: string, input: z.input<typeof resolutionSchema>): Promise<ActionResult> {
+  const parsed = resolutionSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Check the resolution." };
+  const v = parsed.data;
+  const r = {
+    no_fault_found: v.noFaultFound,
+    failure_mode: v.noFaultFound ? null : v.failureMode || null,
+    mechanism: v.noFaultFound ? null : v.mechanism || null,
+    cause: v.noFaultFound ? null : v.cause || null,
+    finding_ids: v.findingIds,
+    cause_narrative: v.causeNarrative.trim(),
+    remedy: v.remedy.trim(),
+    verification: v.verification?.trim() || null,
+    verification_passed: v.verificationPassed,
+    operator_review: v.operatorReview,
+    operator_review_note: v.operatorReviewNote?.trim() || null,
+  };
+  const problems = resolutionProblems(r);
+  if (problems.length) return { ok: false, error: problems.join(" ") };
+  return withRecord(woId, "resolution", ({ repo, profile }) => repo.recordResolution(woId, r, profile.id));
+}
+
+export async function addAddendum(woId: string, body: string): Promise<ActionResult> {
+  const note = body.trim();
+  if (note.length < 5) return { ok: false, error: "Write the addendum." };
+  return withRecord(woId, "addendum", ({ repo, profile }) => repo.addAddendum(woId, note, profile.id));
 }
 
 // ---------------------------------------------------------------- scheduling calendar

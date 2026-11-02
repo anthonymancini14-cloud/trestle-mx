@@ -92,6 +92,12 @@ async function main() {
   await insert("wo_tasks", db.tasks);
   await insert("wo_parts", db.woParts);
   await insert("wo_events", db.events.map((e) => ({ ...e, actor_id: mapPerson(e.actor_id) })));
+  await insert("failure_codes", db.failureCodes);
+  await insert("discrepancy_actions", db.operatorActions.map((a) => ({ ...a, created_by: mapPerson(a.created_by) })));
+  await insert("wo_findings", db.findings.map((f) => ({ ...f, created_by: mapPerson(f.created_by) })));
+  await insert("wo_resolutions", db.resolutions.map(({ finding_ids: _links, ...r }) => ({ ...r, created_by: mapPerson(r.created_by) })));
+  await insert("wo_resolution_findings", db.resolutions.flatMap((r) => r.finding_ids.map((finding_id) => ({ resolution_id: r.id, finding_id }))));
+  await insert("wo_addenda", db.addenda.map((a) => ({ ...a, created_by: mapPerson(a.created_by) })));
   console.log("Done. Sign in as owen@demo.trestle.mx (data center planner) or marcus@demo.trestle.mx (plant planner).");
 }
 

@@ -3,8 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import { PM_LEAD_DAYS } from "@/lib/pm/program";
 import { latestEta } from "@/lib/schedule/calendar";
-import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import type { NewFinding, NewOperatorAction, NewResolution, NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
+  Addendum,
   AreaCode,
   Asset,
   AssetClassWithModes,
@@ -13,15 +14,21 @@ import type {
   Craft,
   CrewMember,
   CrewShift,
+  FailureCode,
+  Finding,
   InventoryItem,
   InventoryRow,
+  OperatorAction,
   Organization,
   Part,
   PmScheduleRow,
   Profile,
+  Resolution,
+  ResolutionHistoryItem,
   Role,
   Site,
   TimeOff,
+  TroubleshootingRecord,
   WoEvent,
   WoPart,
   WoStage,
@@ -252,6 +259,58 @@ export class SupabaseRepository implements Repository {
     );
     await this.logEvent(row.id, { event_type: "created", from_stage: null, to_stage: "identification", note: null }, actorId);
     return row.id;
+  }
+
+  async getTroubleshooting(woId: string): Promise<TroubleshootingRecord> {
+    type Author = { author: { full_name: string } | null };
+    const [actions, findings, resolutions, addenda] = await Promise.all([
+      this.db.from("discrepancy_actions").select("*, author:profiles(full_name)").eq("wo_id", woId).order("created_at"),
+      this.db.from("wo_findings").select("*, author:profiles(full_name)").eq("wo_id", woId).order("created_at"),
+      this.db.from("wo_resolutions").select("*, author:profiles(full_name), links:wo_resolution_findings(finding_id)").eq("wo_id", woId).order("created_at", { ascending: false }),
+      this.db.from("wo_addenda").select("*, author:profiles(full_name)").eq("wo_id", woId).order("created_at"),
+    ]);
+    const sign = <T,>({ author, ...rest }: T & Author) => ({ ...(rest as T), author_name: author?.full_name ?? null });
+    return {
+      actions: unwrap<(OperatorAction & Author)[]>(actions).map(sign),
+      findings: unwrap<(Finding & Author)[]>(findings).map((f) => sign({ ...f, value: f.value === null ? null : Number(f.value) })),
+      resolutions: unwrap<(Omit<Resolution, "finding_ids"> & Author & { links: { finding_id: string }[] })[]>(resolutions).map(({ links, ...r }) =>
+        sign({ ...r, finding_ids: (links ?? []).map((l) => l.finding_id) }),
+      ),
+      addenda: unwrap<(Addendum & Author)[]>(addenda).map(sign),
+    };
+  }
+
+  async listFailureCodes() {
+    return unwrap<FailureCode[]>(await this.db.from("failure_codes").select("*").order("kind").order("code"));
+  }
+
+  async listResolutions(filter: { assetId?: string } = {}): Promise<ResolutionHistoryItem[]> {
+    let query = this.db
+      .from("wo_resolutions")
+      .select("*, links:wo_resolution_findings(finding_id), wo:work_orders!inner(id, wo_number, title, asset_id, wo_type, status, closed_at, created_at, site_id)")
+      .eq("wo.site_id", this.siteId);
+    if (filter.assetId) query = query.eq("wo.asset_id", filter.assetId);
+    type Row = Omit<ResolutionHistoryItem, "finding_ids"> & { links: { finding_id: string }[] };
+    return unwrap<Row[]>(await query.returns<Row[]>()).map(({ links, ...r }) => ({ ...r, finding_ids: (links ?? []).map((l) => l.finding_id) }));
+  }
+
+  async addOperatorAction(woId: string, input: NewOperatorAction, actorId: string) {
+    unwrapVoid(await this.db.from("discrepancy_actions").insert({ ...input, wo_id: woId, created_by: actorId }));
+    await this.logEvent(woId, { event_type: "note", from_stage: null, to_stage: null, note: `Operator action: ${input.action}` }, actorId);
+  }
+
+  async addFinding(woId: string, input: NewFinding, actorId: string) {
+    unwrapVoid(await this.db.from("wo_findings").insert({ ...input, wo_id: woId, created_by: actorId }));
+    await this.logEvent(woId, { event_type: "note", from_stage: null, to_stage: null, note: `Finding: ${input.test} (${input.result})` }, actorId);
+  }
+
+  async recordResolution(woId: string, input: NewResolution, _actorId: string) {
+    const { finding_ids, ...resolution } = input;
+    unwrapVoid(await this.db.rpc("record_resolution", { p_wo_id: woId, p_resolution: resolution, p_finding_ids: finding_ids }));
+  }
+
+  async addAddendum(woId: string, body: string, actorId: string) {
+    unwrapVoid(await this.db.from("wo_addenda").insert({ wo_id: woId, body, created_by: actorId }));
   }
 
   async listJcn(jcn: string) {

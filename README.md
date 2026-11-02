@@ -103,6 +103,28 @@ Planning Mode sees the asset's PM schedule and folds PMs that fall due soon into
 
 ---
 
+## Troubleshooting record
+
+Most CMMS records say what was replaced, not why that fixed it. Each WCE keeps one record, written by the people closest to each part of the problem.
+
+| Part | Who | What it holds |
+|---|---|---|
+| **Operator actions** | Operator | What they saw (running state, alarms, readings), what they tried, what happened, how long it ran after |
+| **Findings** | Technician | One test, measurement or inspection per entry: the reading, the unit, the spec or baseline it was judged against, pass, fail or information, and what it rules in or out |
+| **Resolution** | Technician or supervisor | Failure mode (from the asset class), mechanism and cause (a controlled list after ISO 14224), the findings that prove the cause, the remedy, the test after the repair with its reading, and a review of the operator's first response: helped, masked the problem, or no effect |
+| **Addenda** | Supervisor, planner, admin, or the technician who worked it | Later information on a closed work order, signed and dated under the unchanged record |
+
+Rules:
+
+- **Evidence to close.** A corrective or emergency JCN's WCE -001 can't close without a cause backed by at least one linked finding, or an explicit "no fault found". A cause needs a remedy and a verification reading. A deferral closes without one.
+- **Insert-only.** Entries are never edited or deleted. A correction is a new entry that points at the one it corrects; a new resolution replaces the current one and the old one stays on record.
+- **Repeat failures.** When corrective work on the same asset closed within the class's repeat window (90 days by default, off for run-to-failure classes), a new discrepancy shows the prior cause and fix to the gatekeeper and planner. The same failure mode within the window counts as a confirmed repeat on the dashboard.
+- **Feeds the next plan.** Planning Mode reads the operator actions and findings so far, and the proven cause, fix, verification and operator review behind each past job on the equipment and its train.
+
+In the database, the resolution and its finding links are written by one `SECURITY DEFINER` function, the record tables have no update or delete policies, and a trigger refuses a close without evidence. Photos on findings are designed, not built.
+
+---
+
 ## Job control numbers and work center events
 
 Numbering follows the Air Force job control system Trestle.MX started from.
@@ -170,7 +192,7 @@ Each site has a vertical (industrial/utility or data center). The core is the sa
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
-Role and stage rules live in one pure module (`lib/workflow.ts`) used by both the UI (which buttons show) and the server actions (which mutations are allowed). Six roles: admin, supervisor, planner, gatekeeper, technician, storeroom.
+Role and stage rules live in one pure module (`lib/workflow.ts`) used by both the UI (which buttons show) and the server actions (which mutations are allowed). Seven roles: admin, supervisor, planner, gatekeeper, technician, storeroom, operator.
 
 ---
 
@@ -197,9 +219,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Twenty-one tables, created in dependency order by the migrations in `supabase/migrations/`:
+Twenty-seven tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -285,7 +307,7 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 ## Roadmap
 
 - Planning session history saved per work order (`planning_sessions` table)
-- Troubleshooting record: operator actions, findings and proven cause, coded against the class failure modes
+- Photos on findings (storage), and repeat-failure trends by asset class in the fleet view
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
 - Tray fill tracking from cable outer diameters against each section's design fill

@@ -5,12 +5,15 @@ import { addDays, dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib
 import { todayAt } from "@/lib/utils";
 import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
 import { latestEta } from "@/lib/schedule/calendar";
-import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import { evidenceBlocker } from "@/lib/troubleshooting";
+import type { NewFinding, NewOperatorAction, NewResolution, NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
   CrewMember,
+  ResolutionHistoryItem,
+  TroubleshootingRecord,
   InventoryItem,
   PmScheduleRow,
   Role,
@@ -426,6 +429,8 @@ export class DemoRepository implements Repository {
     if (wo.wce_seq === 1 && db.workOrders.some((w) => w.site_id === this.siteId && w.jcn === wo.jcn && w.id !== wo.id && w.status === "open")) {
       throw new Error("WCE -001 closes last: close the other WCEs on this JCN first");
     }
+    const evidence = evidenceBlocker(wo, db.resolutions.filter((r) => r.wo_id === woId));
+    if (evidence) throw new Error(evidence);
     wo.status = "closed";
     wo.actual_hours = actualHours;
     wo.debrief = debrief;
@@ -523,6 +528,73 @@ export class DemoRepository implements Repository {
       if (!db.siteAccess.some((a) => a.site_id === this.siteId && a.user_id === profileId)) throw new Error("Not at this site");
       db.crewShifts.push({ id: newId(), site_id: this.siteId, profile_id: profileId, shift_hours: shiftHours, work_days: [...workDays].sort() });
     }
+  }
+
+  async getTroubleshooting(woId: string): Promise<TroubleshootingRecord> {
+    const db = store();
+    requireWo(db, woId, this.siteId);
+    const sign = <T extends { created_by: string | null }>(x: T) => ({ ...x, author_name: db.profiles.find((p) => p.id === x.created_by)?.full_name ?? null });
+    const byTime = (a: { created_at: string }, b: { created_at: string }) => a.created_at.localeCompare(b.created_at);
+    return {
+      actions: db.operatorActions.filter((a) => a.wo_id === woId).sort(byTime).map(sign),
+      findings: db.findings.filter((f) => f.wo_id === woId).sort(byTime).map(sign),
+      resolutions: db.resolutions.filter((r) => r.wo_id === woId).sort((a, b) => byTime(b, a)).map(sign),
+      addenda: db.addenda.filter((a) => a.wo_id === woId).sort(byTime).map(sign),
+    };
+  }
+
+  async listFailureCodes() {
+    const db = store();
+    return db.failureCodes.filter((c) => c.org_id === db.org.id);
+  }
+
+  async listResolutions(filter: { assetId?: string } = {}): Promise<ResolutionHistoryItem[]> {
+    const db = store();
+    return db.resolutions.flatMap((r) => {
+      const w = db.workOrders.find((x) => x.id === r.wo_id);
+      if (!w || w.site_id !== this.siteId || (filter.assetId && w.asset_id !== filter.assetId)) return [];
+      return [{ ...r, wo: { id: w.id, wo_number: w.wo_number, title: w.title, asset_id: w.asset_id, wo_type: w.wo_type, status: w.status, closed_at: w.closed_at, created_at: w.created_at } }];
+    });
+  }
+
+  /** Corrections must point at an entry on the same work order. */
+  private checkCorrects(list: { id: string; wo_id: string }[], woId: string, correctsId: string | null) {
+    if (correctsId && !list.some((x) => x.id === correctsId && x.wo_id === woId)) throw new Error("A correction must reference an entry on this work order");
+  }
+
+  async addOperatorAction(woId: string, input: NewOperatorAction, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    this.checkCorrects(db.operatorActions, woId, input.corrects_id);
+    db.operatorActions.push({ ...input, id: newId(), wo_id: woId, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Operator action: ${input.action}`, actor_id: actorId });
+  }
+
+  async addFinding(woId: string, input: NewFinding, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    this.checkCorrects(db.findings, woId, input.corrects_id);
+    db.findings.push({ ...input, id: newId(), wo_id: woId, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Finding: ${input.test} (${input.result})`, actor_id: actorId });
+  }
+
+  async recordResolution(woId: string, input: NewResolution, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    if (!input.finding_ids.every((fid) => db.findings.some((f) => f.id === fid && f.wo_id === woId))) throw new Error("Linked findings must be on this work order");
+    const previous = db.resolutions.filter((r) => r.wo_id === woId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    db.resolutions.push({ ...input, id: newId(), wo_id: woId, supersedes_id: previous?.id ?? null, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Resolution recorded: ${input.no_fault_found ? "no fault found" : input.cause_narrative}`, actor_id: actorId });
+  }
+
+  async addAddendum(woId: string, body: string, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "closed") throw new Error("Addenda are for closed work orders");
+    db.addenda.push({ id: newId(), wo_id: woId, body, created_by: actorId, created_at: nowIso() });
   }
 
   async listPmSchedules(filter: { assetId?: string } = {}): Promise<PmScheduleRow[]> {

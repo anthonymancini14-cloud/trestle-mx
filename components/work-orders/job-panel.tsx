@@ -22,7 +22,7 @@ export function JobPanel({ jcn, job, currentId, canAdd }: { jcn: string; job: Wo
         {job.map((w) => (
           <li key={w.id} className={cn("px-4 py-2.5", w.id === currentId && "bg-brass/[0.05]")}>
             <Link href={`/work-orders/${w.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <Mono className="text-xs">{w.wo_number}</Mono>
+              <Mono className="whitespace-nowrap text-xs">{w.wo_number}</Mono>
               <StageBadge stage={w.stage} status={w.status} />
               <span className="min-w-0 flex-1 truncate text-sm">{w.title}</span>
               <span className="text-xs text-tx-3">

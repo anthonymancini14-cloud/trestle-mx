@@ -26,10 +26,16 @@ import {
 import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
 import { todayAt } from "@/lib/utils";
 import { addDays, applicableTasks, daysBetween, effectiveInterval, nextDueAfter, PM_LEAD_DAYS } from "@/lib/pm/program";
+import { FAILURE_CODES } from "@/lib/taxonomy/failure-codes";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import { CLASS_PM, pmTaskCode } from "@/lib/taxonomy/pm-library";
 import { WO_STAGES } from "@/types/domain";
 import type {
+  Addendum,
+  FailureCode,
+  Finding,
+  OperatorAction,
+  Resolution,
   AreaCode,
   Asset,
   AssetClass,
@@ -72,6 +78,11 @@ export interface Dataset {
   pmDeferrals: PmDeferral[];
   crewShifts: CrewShift[];
   timeOff: TimeOff[];
+  failureCodes: FailureCode[];
+  operatorActions: OperatorAction[];
+  findings: Finding[];
+  resolutions: Resolution[];
+  addenda: Addendum[];
   assets: Asset[];
   cableRoutes: CableRouteSegment[];
   parts: Part[];
@@ -288,6 +299,84 @@ function assignJcns(workOrders: WorkOrder[], seedRows: { id: string; def: WoDef;
     if (closedEvent) closedEvent.note = wo.debrief;
     target.deferred_from_wo_id = wo.id;
   }
+}
+
+/** Seeded troubleshooting records: operator actions, findings, resolutions and addenda. */
+function buildTroubleshooting(workOrders: WorkOrder[], seedRows: { id: string; def: WoDef }[], now: Date) {
+  const operatorActions: OperatorAction[] = [];
+  const findings: Finding[] = [];
+  const resolutions: Resolution[] = [];
+  const addenda: Addendum[] = [];
+  const nowIso = now.toISOString();
+  // Never in the future.
+  const hoursAfter = (iso: string, h: number) => {
+    const t = new Date(Date.parse(iso) + h * 3_600_000).toISOString();
+    return t > nowIso ? nowIso : t;
+  };
+  for (const { id, def } of seedRows) {
+    const t = def.trouble;
+    if (!t) continue;
+    const wo = workOrders.find((w) => w.id === id)!;
+    // The work starts on the scheduled day (07:00 UTC), or at the write-up for work never scheduled.
+    const workStart = wo.scheduled_date && `${wo.scheduled_date}T07:00:00.000Z` > wo.created_at ? `${wo.scheduled_date}T07:00:00.000Z` : wo.created_at;
+    for (const a of t.actions ?? []) {
+      operatorActions.push({
+        id: seedId("operatorAction", operatorActions.length + 1),
+        wo_id: id,
+        conditions: a.conditions,
+        action: a.action,
+        result: a.result,
+        ran_minutes: a.ranMinutes ?? null,
+        corrects_id: null,
+        created_by: personId(a.by),
+        // Operator actions before the write-up are entered with it.
+        created_at: hoursAfter(wo.created_at, Math.max(a.at, 0)),
+      });
+    }
+    const ids = (t.findings ?? []).map((f) => {
+      const fid = seedId("finding", findings.length + 1);
+      findings.push({
+        id: fid,
+        wo_id: id,
+        test: f.test,
+        value: f.value ?? null,
+        unit: f.unit ?? null,
+        spec: f.spec ?? null,
+        result: f.result,
+        note: f.note ?? null,
+        corrects_id: null,
+        created_by: personId(f.by),
+        created_at: hoursAfter(f.onReport ? wo.created_at : workStart, f.at),
+      });
+      return fid;
+    });
+    const r = t.resolution;
+    if (r) {
+      resolutions.push({
+        id: seedId("resolution", resolutions.length + 1),
+        wo_id: id,
+        failure_mode: r.mode ?? null,
+        mechanism: r.mechanism ?? null,
+        cause: r.cause ?? null,
+        no_fault_found: r.nff ?? false,
+        cause_narrative: r.why,
+        remedy: r.remedy,
+        verification: r.verification ?? null,
+        verification_passed: r.verified ?? null,
+        operator_review: r.review,
+        operator_review_note: r.reviewNote ?? null,
+        finding_ids: r.supportedBy.map((i) => ids[i]),
+        supersedes_id: null,
+        created_by: personId(r.by),
+        // Never after the close.
+        created_at: wo.closed_at && hoursAfter(workStart, r.at) > wo.closed_at ? wo.closed_at : hoursAfter(workStart, r.at),
+      });
+    }
+    for (const a of t.addenda ?? []) {
+      addenda.push({ id: seedId("addendum", addenda.length + 1), wo_id: id, body: a.body, created_by: personId(a.by), created_at: hoursAfter(wo.closed_at!, a.daysAfterClose * 24) });
+    }
+  }
+  return { operatorActions, findings, resolutions, addenda };
 }
 
 /** The current WCE number of each seeded work order, by seed key (for demo plans that cite history). */
@@ -511,6 +600,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     wo.scheduled_date = onShiftDay(r.def.assignedTo, target.scheduled_date!);
   }
   assignJcns(workOrders, seedRows, events);
+  const record = buildTroubleshooting(workOrders, seedRows, now);
 
   // PM schedule dates: from linked work orders where there are any, otherwise a
   // stable spread across each interval, with a few overdue for realism.
@@ -591,6 +681,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
     pmDeferrals,
     crewShifts,
     timeOff,
+    failureCodes: FAILURE_CODES.map((c, i) => ({ id: seedId("failureCode", i + 1), org_id: ORG.id, class_id: null, ...c })),
+    ...record,
     assets: ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
     cableRoutes: buildCableRoutes(),
     parts: ALL_PARTS,

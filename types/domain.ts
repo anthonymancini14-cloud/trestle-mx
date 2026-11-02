@@ -13,6 +13,7 @@ export const ROLES = [
   "gatekeeper",
   "technician",
   "storeroom",
+  "operator",
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -23,6 +24,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   gatekeeper: "Gatekeeper",
   technician: "Technician",
   storeroom: "Storeroom",
+  operator: "Operator",
 };
 
 /** The six-stage work order lifecycle. */
@@ -505,4 +507,118 @@ export interface CalendarWorkOrder
   /** Parts not yet on site: count, and the latest expected date (null if any has no date). */
   parts_short: number;
   parts_ready_on: string | null;
+}
+
+// ---------------------------------------------------------------- Troubleshooting record
+
+/**
+ * One troubleshooting record per WCE (TMX-006 to TMX-009): what the operator
+ * saw and tried, each test the tradesman made, and the proven cause with the
+ * test that proves the fix. Entries are never edited; a correction is a new
+ * entry that points at the one it corrects.
+ */
+
+/** What an operator saw and did before maintenance arrived, and what happened next. */
+export interface OperatorAction {
+  id: string;
+  wo_id: string;
+  /** Running state, alarms, readings when they acted. */
+  conditions: string;
+  action: string;
+  result: string;
+  /** How long it ran after the action, when it came back. */
+  ran_minutes: number | null;
+  corrects_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export const FINDING_RESULTS = ["pass", "fail", "info"] as const;
+export type FindingResult = (typeof FINDING_RESULTS)[number];
+
+/** One test, measurement or inspection, with the value and the spec it was judged against. */
+export interface Finding {
+  id: string;
+  wo_id: string;
+  test: string;
+  value: number | null;
+  unit: string | null;
+  /** The spec or baseline, as written (e.g. "100 MΩ minimum", "baseline 0.10 in/s"). */
+  spec: string | null;
+  result: FindingResult;
+  /** What it rules in or out. */
+  note: string | null;
+  corrects_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export const FAILURE_CODE_KINDS = ["mechanism", "cause"] as const;
+export type FailureCodeKind = (typeof FAILURE_CODE_KINDS)[number];
+
+/** A controlled failure mechanism or cause, modeled on ISO 14224. Org-wide when class_id is null. */
+export interface FailureCode {
+  id: string;
+  org_id: string;
+  class_id: string | null;
+  kind: FailureCodeKind;
+  code: string;
+  name: string;
+}
+
+export const OPERATOR_REVIEWS = ["helped", "masked", "no_effect", "none_taken"] as const;
+export type OperatorReview = (typeof OPERATOR_REVIEWS)[number];
+export const OPERATOR_REVIEW_LABELS: Record<OperatorReview, string> = {
+  helped: "Helped",
+  masked: "Masked the problem",
+  no_effect: "No effect",
+  none_taken: "No operator action",
+};
+
+/** The confirmed cause, the remedy, the findings that prove the cause and the test that proves the fix. */
+export interface Resolution {
+  id: string;
+  wo_id: string;
+  /** Failure mode code from the asset's class (e.g. VIB). */
+  failure_mode: string | null;
+  mechanism: string | null;
+  cause: string | null;
+  /** Explicit "no fault found": closes without a cause (TMX-006). */
+  no_fault_found: boolean;
+  cause_narrative: string;
+  remedy: string;
+  verification: string | null;
+  verification_passed: boolean | null;
+  operator_review: OperatorReview;
+  operator_review_note: string | null;
+  /** Findings that support the cause. */
+  finding_ids: string[];
+  /** A later resolution replaces this one. The current one is the newest. */
+  supersedes_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** Added to a closed work order, which is never edited (TMX-007). */
+export interface Addendum {
+  id: string;
+  wo_id: string;
+  body: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+type Signed<T> = T & { author_name: string | null };
+
+export interface TroubleshootingRecord {
+  actions: Signed<OperatorAction>[];
+  findings: Signed<Finding>[];
+  /** Newest first; the first is current. */
+  resolutions: Signed<Resolution>[];
+  addenda: Signed<Addendum>[];
+}
+
+/** A resolution with its work order, for history and repeat-failure checks. */
+export interface ResolutionHistoryItem extends Resolution {
+  wo: Pick<WorkOrder, "id" | "wo_number" | "title" | "asset_id" | "wo_type" | "status" | "closed_at" | "created_at">;
 }

@@ -11,6 +11,8 @@
 import { seedId } from "./ids";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import type {
+  FindingResult,
+  OperatorReview,
   AreaCode,
   Asset,
   AssetAttributes,
@@ -85,6 +87,7 @@ export const PROFILES: Profile[] = [
   { id: seedId("profile", 9), full_name: "Devon Hale", role: "technician", craft: "mechanical", is_active: true },
   { id: seedId("profile", 10), full_name: "Nate Ellis", role: "technician", craft: "process_controls", is_active: true },
   { id: seedId("profile", 11), full_name: "Luis Ortega", role: "technician", craft: "contractor", is_active: true },
+  { id: seedId("profile", 12), full_name: "Grace Lin", role: "operator", craft: null, is_active: true },
 ];
 
 export const personId = (name: string) => {
@@ -275,9 +278,37 @@ export interface WoPartDef {
   etaInDays?: number;
 }
 
+/**
+ * Seeded troubleshooting record. Operator actions and findings marked
+ * `onReport` are hours after the write-up; other findings and the resolution
+ * are hours into the work (from the scheduled date). Addenda are days after close.
+ */
+export interface TroubleDef {
+  actions?: { at: number; by: string; conditions: string; action: string; result: string; ranMinutes?: number }[];
+  findings?: { at: number; onReport?: boolean; by: string; test: string; value?: number; unit?: string; spec?: string; result: FindingResult; note?: string }[];
+  resolution?: {
+    at: number;
+    by: string;
+    mode?: string;
+    mechanism?: string;
+    cause?: string;
+    nff?: boolean;
+    why: string;
+    remedy: string;
+    verification?: string;
+    verified?: boolean;
+    review: OperatorReview;
+    reviewNote?: string;
+    /** Indexes into `findings` that support the cause. */
+    supportedBy: number[];
+  };
+  addenda?: { daysAfterClose: number; by: string; body: string }[];
+}
+
 export interface WoDef {
   /** Seed key. The real number is a JCN-WCE built from the dates (lib/jcn.ts). */
   num: number;
+  trouble?: TroubleDef;
   /** This is another shop's WCE on the JCN of seed `wceOf` (its -001). */
   wceOf?: number;
   /** Closed as deferred: the work was written up under the JCN of seed `deferredTo`. */
@@ -335,6 +366,28 @@ export const WO_DEFS: WoDef[] = [
       { pn: "MX-GSK-HSC12", qty: 1, used: 1, status: "issued" },
       { pn: "MX-SHIM-KIT", qty: 1, used: 1, status: "issued" },
     ],
+    trouble: {
+      actions: [
+        { at: -1.5, by: "Grace", conditions: "P-201A running at 92% speed. High vibration alarm on the control system; inboard bearing housing hot to the touch.", action: "Started P-201B, stopped and isolated P-201A.", result: "Header pressure held on B; process stable." },
+      ],
+      findings: [
+        { at: 1, onReport: true, by: "Jordan", test: "Inboard bearing housing overall vibration", value: 0.38, unit: "in/s", spec: "Baseline 0.10 in/s; alert 0.25", result: "fail", note: "Bearing defect frequencies present in the spectrum." },
+        { at: 1.5, onReport: true, by: "Jordan", test: "Inboard bearing temperature", value: 196, unit: "°F", spec: "About 150 °F typical", result: "fail" },
+        { at: 3, by: "Jordan", test: "Soft foot check, motor feet", value: 0.006, unit: "in", spec: "0.002 in maximum", result: "fail", note: "Motor outboard foot." },
+        { at: 6, by: "Jordan", test: "Teardown: inboard bearing inspection", result: "fail", note: "Spalling on the outer race, load zone offset toward the motor: misalignment pattern." },
+      ],
+      resolution: {
+        at: 30, by: "Jordan", mode: "VIB", mechanism: "2.4", cause: "2.2",
+        why: "Inboard bearing wore out from shaft misalignment. The motor sat on uncorrected soft foot, so alignment drifted after the last coupling job.",
+        remedy: "Replaced both bearings, shimmed out the soft foot, laser aligned to 0.002 in offset.",
+        verification: "Ran 4 h: inboard 0.09 in/s, 151 °F.", verified: true,
+        review: "helped", reviewNote: "Switching to B straight away kept the bearing from seizing on the shaft.",
+        supportedBy: [0, 2, 3],
+      },
+      addenda: [
+        { daysAfterClose: 60, by: "Lena", body: "Two months on, the vibration route reads 0.07 in/s on the inboard bearing. The repair is holding. Soft foot check added to the split-case pump job template." },
+      ],
+    },
   },
   {
     num: 1012,
@@ -376,6 +429,12 @@ export const WO_DEFS: WoDef[] = [
       { pn: "MX-VLV-BALL-050", qty: 1, used: 1, status: "issued" },
       { pn: "MX-PG-0300", qty: 1, used: 1, status: "issued" },
     ],
+    trouble: {
+      findings: [
+        { at: 0.5, by: "Riley", test: "Discharge gauge with pump running, isolation valve open", value: 0, unit: "psi", spec: "About 60 psi normal", result: "fail", note: "Gauge isolation valve seized closed." },
+        { at: 1.5, by: "Riley", test: "Discharge pressure after valve replacement, against a test gauge", value: 62, unit: "psi", spec: "Test gauge 61 psi, within 2 psi", result: "pass" },
+      ],
+    },
   },
   {
     num: 1020,
@@ -403,6 +462,11 @@ export const WO_DEFS: WoDef[] = [
       { desc: "Re-energize, re-scan with IR camera under load", craft: "electrical", hours: 0.5, accept: "Phase-to-phase delta under 3 °C" },
     ],
     parts: [{ pn: "MX-ELEC-LUG-KIT", qty: 1, status: "kitted" }],
+    trouble: {
+      findings: [
+        { at: 0, onReport: true, by: "Alex", test: "Infrared survey, bucket 3C load-side lugs", value: 18, unit: "°C rise", spec: "Under 10 °C rise over similar phases", result: "fail", note: "Phase B only." },
+      ],
+    },
   },
   {
     num: 1024,
@@ -515,12 +579,50 @@ export const WO_DEFS: WoDef[] = [
   },
 
   // ---------------- Vetting ----------------
+  // Same compressor, same symptom, 40 days earlier: the new discrepancy flags as a possible repeat.
+  {
+    num: 1049,
+    title: "Air compressor tripping on high discharge temperature",
+    description: "C-801 tripped twice on high discharge temperature during the afternoon heat.",
+    floc: "BRP-AIR-C-801", type: "corrective", priority: 2, stage: "closure", status: "closed",
+    reportedBy: "Grace", assignedTo: "Devon", createdDaysAgo: 40, closedAfterDays: 2, estHours: 2.5, actualHours: 3.5,
+    debrief: "Oil cooler fins about 60% blocked with dust and cottonwood. Cleaned with air and low-pressure water; took an hour longer than planned to get the fins clear. Cleaning on the 2000-hour service isn't often enough in summer.",
+    tasks: [
+      { desc: "Lock out C-801; inspect oil cooler and thermostatic valve", craft: "mechanical", hours: 1, done: true },
+      { desc: "Clean cooler fins; check oil level; return to service", craft: "mechanical", hours: 1.5, done: true },
+    ],
+    trouble: {
+      actions: [
+        { at: -2, by: "Grace", conditions: "Tripped on high discharge temperature mid-afternoon.", action: "Reset the trip and restarted.", result: "Tripped again 90 minutes later.", ranMinutes: 90 },
+      ],
+      findings: [
+        { at: 1, onReport: true, by: "Devon", test: "Discharge temperature before trip, controller log", value: 228, unit: "°F", spec: "Trip at 230 °F; normal about 190 °F", result: "fail" },
+        { at: 1, by: "Devon", test: "Oil cooler fin blockage, visual", value: 60, unit: "% blocked", spec: "Clean", result: "fail", note: "Dust and cottonwood packed in the fins." },
+        { at: 1.5, by: "Devon", test: "Thermostatic valve: fully open temperature", value: 180, unit: "°F", spec: "Open by 185 °F", result: "pass", note: "Rules out the valve." },
+        { at: 1.6, by: "Devon", test: "Oil level", result: "pass", note: "At the full mark." },
+      ],
+      resolution: {
+        at: 4, by: "Devon", mode: "UST", mechanism: "5.1", cause: "3.4",
+        why: "Oil cooler plugged with airborne debris, so the oil ran hot and the compressor tripped on discharge temperature.",
+        remedy: "Cleaned the cooler fins with air and low-pressure water.",
+        verification: "Ran the next afternoon at 96 °F room temperature: discharge 191 °F.", verified: true,
+        review: "masked", reviewNote: "The reset ran a hot compressor for another 90 minutes. Switch to the backup on a high-temperature trip instead.",
+        supportedBy: [0, 1],
+      },
+    },
+  },
   {
     num: 1038,
     title: "Air compressor intermittent high discharge temperature alarm",
     description: "Compressor tripped on high discharge temperature twice this week, both afternoons.",
     floc: "BRP-AIR-C-801", type: "corrective", priority: 2, stage: "vetting",
     reportedBy: "Sam", createdDaysAgo: 1,
+    trouble: {
+      actions: [
+        { at: -3, by: "Grace", conditions: "C-801 tripped on high discharge temperature at 15:40, compressor room about 98 °F.", action: "Reset the trip and restarted.", result: "Ran about 2 hours, tripped again.", ranMinutes: 125 },
+        { at: -0.5, by: "Grace", conditions: "Second trip. Plant air header falling.", action: "Opened the compressor room doors and started the backup compressor.", result: "Header recovered on the backup." },
+      ],
+    },
   },
   {
     num: 1039,

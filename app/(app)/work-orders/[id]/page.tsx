@@ -10,7 +10,10 @@ import { CriticalityBadge, PriorityBadge, StageBadge, TypeLabel } from "@/compon
 import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { formatDate, formatDateTime, formatHours } from "@/lib/utils";
-import { availableActions, canAddWce, canDefer, primaryCloseBlocker } from "@/lib/workflow";
+import { availableActions, canAddWce, canDefer, canRecord, primaryCloseBlocker } from "@/lib/workflow";
+import { currentResolution, DEFAULT_REPEAT_WINDOW_DAYS, EVIDENCE_TYPES, evidenceBlocker, repeatCheck, type RepeatCheck } from "@/lib/troubleshooting";
+import { TroubleshootingPanel } from "@/components/work-orders/troubleshooting-panel";
+import { daysBetween } from "@/lib/pm/program";
 import { JobPanel } from "@/components/work-orders/job-panel";
 
 export default async function WorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
@@ -26,7 +29,18 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
   const primary = job.find((w) => w.wce_seq === 1) ?? wo;
   const deferredFrom = wo.deferred_from_wo_id ? await repo.getWorkOrder(wo.deferred_from_wo_id) : null;
   const deferredTo = wo.deferred_to_jcn ? (await repo.listJcn(wo.deferred_to_jcn)).find((w) => w.wce_seq === 1) : undefined;
-  const closeBlocker = primaryCloseBlocker(wo, job);
+  const [record, codes, assetHistory] = await Promise.all([
+    repo.getTroubleshooting(wo.id),
+    repo.listFailureCodes(),
+    wo.asset ? repo.listResolutions({ assetId: wo.asset.id }) : Promise.resolve([]),
+  ]);
+  const evidence = evidenceBlocker(wo, record.resolutions);
+  const evidenceApplies = wo.wce_seq === 1 && EVIDENCE_TYPES.includes(wo.wo_type) && !wo.deferred_to_jcn;
+  const closeBlocker = primaryCloseBlocker(wo, job) ?? evidence;
+  const assetClass = asset?.asset_class ?? null;
+  const windowDays = assetClass ? assetClass.repeat_window_days : DEFAULT_REPEAT_WINDOW_DAYS;
+  const repeat = repeatCheck(wo, assetHistory, windowDays, currentResolution(record.resolutions));
+  const modes = (assetClass?.failure_modes ?? []).map((m) => ({ code: m.code, name: m.name }));
 
   const actions = availableActions(profile.role, wo, { schedulerRoles: site.scheduler_roles });
   const nameOf = (pid: string | null) => profiles.find((p) => p.id === pid)?.full_name ?? "—";
@@ -121,6 +135,23 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
               </div>
             )}
           </Panel>
+
+          {repeat && <RepeatPanel repeat={repeat} modes={modes} />}
+
+          <TroubleshootingPanel
+            woId={wo.id}
+            record={record}
+            modes={modes}
+            mechanisms={codes.filter((c) => c.kind === "mechanism").map((c) => ({ code: c.code, name: c.name }))}
+            causes={codes.filter((c) => c.kind === "cause").map((c) => ({ code: c.code, name: c.name }))}
+            can={{
+              action: canRecord("operator_action", profile.role, wo),
+              finding: canRecord("finding", profile.role, wo),
+              resolution: canRecord("resolution", profile.role, wo),
+              addendum: canRecord("addendum", profile.role, wo, profile.id),
+            }}
+            evidence={evidenceApplies && wo.status === "open" && (wo.stage === "execution" || wo.stage === "closure") ? (evidence ?? "") : null}
+          />
 
           <JobPanel jcn={wo.jcn} job={job} currentId={wo.id} canAdd={canAddWce(profile.role, primary)} />
 
@@ -246,4 +277,36 @@ function describeEvent(type: string, to: string | null, fromPm: boolean): string
     default:
       return "added a note";
   }
+}
+
+/** Possible or confirmed repeat failure (TMX-008): put the prior fix in front of the gatekeeper and planner. */
+function RepeatPanel({ repeat, modes }: { repeat: RepeatCheck; modes: { code: string; name: string }[] }) {
+  const confirmed = repeat.sameMode.length > 0;
+  return (
+    <section aria-label="Repeat failure" className="rounded-[3px] border border-warn/50 bg-warn/[0.07]">
+      <header className="flex items-center gap-2 border-b border-warn/30 px-4 py-2 text-sm text-warn">
+        <AlertTriangle className="size-4 shrink-0" aria-hidden />
+        <strong>{confirmed ? "Repeat failure" : "Possible repeat failure"}</strong>
+        <span className="text-xs">
+          {confirmed ? "Same failure mode on this asset" : "Corrective work on this asset closed"} within the {repeat.windowDays}-day window
+        </span>
+      </header>
+      <ul className="divide-y divide-warn/20">
+        {repeat.prior.map((p) => (
+          <li key={p.id} className="space-y-0.5 px-4 py-2 text-sm">
+            <Link href={`/work-orders/${p.wo.id}`} className="flex flex-wrap items-center gap-x-2">
+              <span className="font-mono text-xs text-brass-bright">{p.wo.wo_number}</span>
+              <span>{p.wo.title}</span>
+              <span className="text-xs text-tx-3">closed {formatDate(p.wo.closed_at)}, {daysBetween(p.wo.closed_at!.slice(0, 10), new Date().toISOString().slice(0, 10))} days ago</span>
+            </Link>
+            <p className="text-xs text-tx-2">
+              {p.failure_mode && <span className="font-mono">{p.failure_mode} {modes.find((m) => m.code === p.failure_mode)?.name} · </span>}
+              {p.no_fault_found ? "No fault found. " : `Cause: ${p.cause_narrative} `}
+              {p.remedy && `Fix: ${p.remedy}`}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }

@@ -4,6 +4,12 @@ import type {
   Asset,
   AssetClassWithModes,
   AssetDetail,
+  FailureCode,
+  Finding,
+  OperatorAction,
+  Resolution,
+  ResolutionHistoryItem,
+  TroubleshootingRecord,
   CalendarWorkOrder,
   CrewMember,
   InventoryItem,
@@ -24,6 +30,10 @@ export interface WorkOrderFilter {
   status?: "open" | "closed" | "rejected";
   assetId?: string;
 }
+
+export type NewOperatorAction = Pick<OperatorAction, "conditions" | "action" | "result" | "ran_minutes" | "corrects_id">;
+export type NewFinding = Pick<Finding, "test" | "value" | "unit" | "spec" | "result" | "note" | "corrects_id">;
+export type NewResolution = Omit<Resolution, "id" | "wo_id" | "supersedes_id" | "created_by" | "created_at">;
 
 export interface NewTimeOffInput {
   profile_id: string;
@@ -86,6 +96,19 @@ export interface Repository {
   setSchedulerRoles(roles: Role[], actorId: string): Promise<void>;
   addTimeOff(input: NewTimeOffInput, actorId: string): Promise<void>;
   updateShift(profileId: string, shiftHours: number, workDays: number[], actorId: string): Promise<void>;
+
+  /** A WCE's troubleshooting record: operator actions, findings, resolutions (newest first) and addenda. */
+  getTroubleshooting(woId: string): Promise<TroubleshootingRecord>;
+  /** Failure mechanisms and causes (failure modes come from the asset class). */
+  listFailureCodes(): Promise<FailureCode[]>;
+  /** Every resolution at the site with its work order, for history and repeat-failure checks. */
+  listResolutions(filter?: { assetId?: string }): Promise<ResolutionHistoryItem[]>;
+  addOperatorAction(woId: string, input: NewOperatorAction, actorId: string): Promise<void>;
+  addFinding(woId: string, input: NewFinding, actorId: string): Promise<void>;
+  /** Record (or supersede) the resolution. Linked findings must be on the same work order. */
+  recordResolution(woId: string, input: NewResolution, actorId: string): Promise<void>;
+  /** A note on a closed work order, which is never edited. */
+  addAddendum(woId: string, body: string, actorId: string): Promise<void>;
 
   /** Report a new discrepancy: a new JCN with its WCE -001. Returns the work order id. */
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;

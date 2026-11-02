@@ -9,6 +9,8 @@ import type {
   AssetDetail,
   CableSpec,
   PmScheduleRow,
+  ResolutionHistoryItem,
+  TroubleshootingRecord,
   InventoryItem,
   Profile,
   WorkOrderDetail,
@@ -41,6 +43,10 @@ export interface SiteContext {
   pmSchedules: PmScheduleRow[];
   /** Every WCE on this work order's JCN. */
   job: WorkOrderListItem[];
+  /** This WCE's troubleshooting record so far. */
+  record: TroubleshootingRecord;
+  /** Resolutions on the history work orders, by work order id (the cause behind each past job). */
+  causes: Map<string, ResolutionHistoryItem>;
   today: string;
 }
 
@@ -96,8 +102,21 @@ export async function buildSiteContext(repo: Repository, woId: string): Promise<
     carriedCables: detail?.carried_cables ?? [],
     pmSchedules: asset ? await repo.listPmSchedules({ assetId: asset.id }) : [],
     job: await repo.listJcn(workOrder.jcn),
+    record: await repo.getTroubleshooting(workOrder.id),
+    causes: await causesFor(repo, historyAssetIds),
     today: todayAt(site.timezone),
   };
+}
+
+/** The newest resolution of each past work order on these assets. */
+async function causesFor(repo: Repository, assetIds: string[]): Promise<Map<string, ResolutionHistoryItem>> {
+  const all = (await Promise.all(assetIds.map((id) => repo.listResolutions({ assetId: id })))).flat();
+  const out = new Map<string, ResolutionHistoryItem>();
+  for (const r of all) {
+    const prev = out.get(r.wo_id);
+    if (!prev || r.created_at > prev.created_at) out.set(r.wo_id, r);
+  }
+  return out;
 }
 
 export function formatSiteContext(ctx: SiteContext): string {
@@ -115,6 +134,18 @@ export function formatSiteContext(ctx: SiteContext): string {
   lines.push(`Reported problem: ${wo.description}`);
   if (wo.tasks.length) {
     lines.push(`Existing plan steps: ${wo.tasks.map((t) => `${t.seq} ${t.description}`).join("; ")}`);
+  }
+  const corrected = new Set([...ctx.record.actions, ...ctx.record.findings].map((e) => e.corrects_id).filter(Boolean));
+  const actions = ctx.record.actions.filter((a) => !corrected.has(a.id));
+  const findings = ctx.record.findings.filter((f) => !corrected.has(f.id));
+  if (actions.length || findings.length) {
+    lines.push("", "## Troubleshooting so far on this work order");
+    for (const a of actions) {
+      lines.push(`- Operator: saw ${a.conditions} Did: ${a.action} Result: ${a.result}${a.ran_minutes !== null ? ` (ran ${a.ran_minutes} min)` : ""}`);
+    }
+    for (const f of findings) {
+      lines.push(`- Finding: ${f.test}${f.value !== null ? ` = ${f.value} ${f.unit ?? ""}`.trimEnd() : ""}${f.spec ? ` (spec ${f.spec})` : ""}: ${f.result}${f.note ? `. ${f.note}` : ""}`);
+    }
   }
 
   if (a) {
@@ -180,7 +211,7 @@ export function formatSiteContext(ctx: SiteContext): string {
   if (!ctx.history.length) lines.push("None on record.");
   for (const h of ctx.history) {
     lines.push(
-      `- ${h.wo_number} on ${h.asset?.floc ?? "?"}, closed ${h.closed_at?.slice(0, 10) ?? "?"}: ${h.title}. Planned ${h.estimated_hours ?? "?"} h, actual ${h.actual_hours ?? "?"} h.${h.debrief ? ` Debrief: ${h.debrief}` : ""}`,
+      `- ${h.wo_number} on ${h.asset?.floc ?? "?"}, closed ${h.closed_at?.slice(0, 10) ?? "?"}: ${h.title}. Planned ${h.estimated_hours ?? "?"} h, actual ${h.actual_hours ?? "?"} h.${h.debrief ? ` Debrief: ${h.debrief}` : ""}${formatCause(ctx.causes.get(h.id))}`,
     );
   }
 
@@ -196,6 +227,13 @@ export function formatSiteContext(ctx: SiteContext): string {
   lines.push([...byCraft].map(([craft, n]) => `${craft}: ${n}`).join(", ") + ". Operations support available for isolations.");
 
   return lines.join("\n");
+}
+
+function formatCause(r: ResolutionHistoryItem | undefined): string {
+  if (!r) return "";
+  if (r.no_fault_found) return ` Resolution: no fault found. ${r.cause_narrative}`;
+  const codes = [r.failure_mode, r.mechanism && `mechanism ${r.mechanism}`, r.cause && `cause ${r.cause}`].filter(Boolean).join(", ");
+  return ` Proven cause (${codes}): ${r.cause_narrative} Fix: ${r.remedy}${r.verification ? ` Verified: ${r.verification}` : ""}${r.operator_review !== "none_taken" ? ` Operator first response ${r.operator_review.replace("_", " ")}${r.operator_review_note ? `: ${r.operator_review_note}` : ""}.` : ""}`;
 }
 
 function formatCableSpec(s: CableSpec): string {

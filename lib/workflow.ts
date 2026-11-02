@@ -24,7 +24,7 @@ interface ActionRule {
 }
 
 export const ACTION_RULES: Record<WoAction, ActionRule> = {
-  submit_for_vetting: { stage: "identification", roles: ["technician", "planner", "supervisor", "admin", "gatekeeper"], label: "Submit for vetting" },
+  submit_for_vetting: { stage: "identification", roles: ["operator", "technician", "planner", "supervisor", "admin", "gatekeeper"], label: "Submit for vetting" },
   authorize: { stage: "vetting", roles: ["gatekeeper", "admin"], label: "Authorize" },
   reject: { stage: "vetting", roles: ["gatekeeper", "admin"], label: "Reject" },
   plan: { stage: "planning", roles: ["planner", "admin"], label: "Open Planning Mode" },
@@ -114,7 +114,7 @@ export function canReschedule(role: Role, wo: Pick<WorkOrder, "stage" | "status"
  */
 export const WCE_RULES = {
   /** Write up another shop's WCE on an open JCN: anyone who can report a discrepancy. */
-  add: ["technician", "planner", "supervisor", "admin", "gatekeeper"],
+  add: ["operator", "technician", "planner", "supervisor", "admin", "gatekeeper"],
   /** Close a WCE as deferred and carry the work under a new JCN. */
   defer: ["supervisor", "admin"],
 } as const satisfies Record<string, readonly Role[]>;
@@ -135,4 +135,42 @@ export function primaryCloseBlocker(wo: Pick<WorkOrder, "id" | "wce_seq">, sibli
   const open = siblings.filter((s) => s.id !== wo.id && s.status === "open");
   if (open.length === 0) return null;
   return `WCE -001 closes last, with the corrective action summary. Still open: ${open.map((s) => s.wo_number).join(", ")}.`;
+}
+
+// ---------------------------------------------------------------- Troubleshooting record
+
+/**
+ * Who writes each part of the troubleshooting record (TMX-006, TMX-007, TMX-009).
+ * Entries are insert-only; a correction is a new entry pointing at the old one.
+ */
+export const RECORD_RULES = {
+  /** What the operator saw and tried before maintenance arrived. */
+  operator_action: ["operator", "supervisor", "admin"],
+  /** Each test, measurement or inspection. */
+  finding: ["technician", "supervisor", "admin"],
+  /** The cause, the findings that prove it, the remedy and the verification. */
+  resolution: ["technician", "supervisor", "admin"],
+  /** A note added to a closed work order (plus the technician who worked it). */
+  addendum: ["supervisor", "planner", "admin"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export type RecordKind = keyof typeof RECORD_RULES;
+
+export function canRecord(
+  kind: RecordKind,
+  role: Role,
+  wo: Pick<WorkOrder, "stage" | "status" | "assigned_to">,
+  profileId?: string,
+): boolean {
+  const allowed = (RECORD_RULES[kind] as readonly Role[]).includes(role);
+  switch (kind) {
+    case "operator_action":
+    case "finding":
+      return allowed && wo.status === "open";
+    case "resolution":
+      return allowed && wo.status === "open" && (wo.stage === "execution" || wo.stage === "closure");
+    case "addendum":
+      // Closed work is never edited; these roles, and the technician who worked the job, can add to it.
+      return wo.status === "closed" && (allowed || (role === "technician" && !!profileId && wo.assigned_to === profileId));
+  }
 }

@@ -17,7 +17,8 @@ General planning and scheduling principles widely taught in the reliability prof
 
 - Plan the job, not the person: assume a qualified craftsperson, do not write a training manual.
 - Kit parts before the job is scheduled. A job is "ready" only when parts, permits and access are confirmed.
-- Use history. If the last similar job overran, find out why and plan for it.
+- Use history. If the last similar job overran, find out why and plan for it. Where past work has a proven cause (the findings behind it and the test that proved the fix), plan from that cause, not from the symptom. If the same failure mode came back within the repeat window, say so: the last fix didn't hold, and the plan should go after the cause.
+- Read the operator's first response and the findings so far before choosing the steps. Don't repeat a test that has already been done unless the plan says why.
 - Write open questions down instead of guessing. The field walkdown answers them.
 - Separate what is known from what is assumed about failure cause.
 - One WCE per shop. A work order is a work center event (WCE) on a job control number (JCN). When the job needs another shop (scaffold, electrical isolation, controls), plan only this WCE's own steps and say in the plan which other WCEs the job needs and when they must happen (for example, scaffold erected the day before). Each shop's WCE is planned, scheduled and closed on its own; WCE -001 belongs to the shop primarily responsible and closes last with the corrective action summary.

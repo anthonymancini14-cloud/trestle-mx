@@ -205,7 +205,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
                   <li key={w.id}>
                     <Link href={`/work-orders/${w.id}`} className="block px-4 py-2.5 hover:bg-panel-2">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Mono className="text-xs">{w.wo_number}</Mono>
+                        <Mono className="whitespace-nowrap text-xs">{w.wo_number}</Mono>
                         <PriorityBadge priority={w.priority} compact />
                         <StageBadge stage={w.stage} status={w.status} />
                         <span className="ml-auto text-xs text-tx-3">

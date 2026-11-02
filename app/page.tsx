@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { ArrowRight, ClipboardList, HardHat, ShieldCheck, Wrench, Package, CalendarClock, Server, Factory } from "lucide-react";
+import { ArrowRight, Gauge, ClipboardList, HardHat, ShieldCheck, Wrench, Package, CalendarClock, Server, Factory } from "lucide-react";
 import { TrestleMark, Wordmark } from "@/components/brand";
 import { isLiveMode } from "@/lib/config";
 import { enterDemo } from "@/lib/actions";
@@ -17,6 +17,7 @@ const ENTRY_ROLES: { role: Role; icon: typeof Wrench; blurb: string; featured?: 
   { role: "supervisor", icon: CalendarClock, blurb: "Schedule planned work and close it out with a debrief." },
   { role: "technician", icon: HardHat, blurb: "Work today's jobs step by step from a tablet." },
   { role: "storeroom", icon: Package, blurb: "Watch reservations, kits and stock levels." },
+  { role: "operator", icon: Gauge, blurb: "Report what you saw and what you tried before maintenance arrived." },
 ];
 
 export default function Home() {

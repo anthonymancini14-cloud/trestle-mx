@@ -83,7 +83,7 @@ export default async function WorkOrdersPage({ searchParams }: { searchParams: P
                 <tr key={w.id} className="hover:bg-panel-2">
                   <Td>
                     <Link href={`/work-orders/${w.id}`} className="hover:underline">
-                      <Mono>{w.wo_number}</Mono>
+                      <Mono className="whitespace-nowrap">{w.wo_number}</Mono>
                     </Link>
                   </Td>
                   <Td className="min-w-64">
