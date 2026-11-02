@@ -2,19 +2,25 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import { PM_LEAD_DAYS } from "@/lib/pm/program";
-import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AreaCode,
   Asset,
   AssetClassWithModes,
   AssetDetail,
+  CalendarWorkOrder,
+  Craft,
+  CrewMember,
+  CrewShift,
   InventoryItem,
   InventoryRow,
   Organization,
   Part,
   PmScheduleRow,
   Profile,
+  Role,
   Site,
+  TimeOff,
   WoEvent,
   WoPart,
   WoStage,
@@ -33,6 +39,11 @@ import type {
 
 const WO_LIST_SELECT =
   "*, asset:assets(id, floc, name, criticality), assignee:profiles!work_orders_assigned_to_fkey(full_name)";
+
+/** Open work for the scheduling calendar, with the plan's craft hours. Typed as string so rows cast to our shape. */
+const CALENDAR_SELECT: string =
+  "id, wo_number, title, stage, priority, wo_type, requires_shutdown, scheduled_date, assigned_to, estimated_hours, pm_schedule_id, created_at, " +
+  "asset:assets(id, floc, name, criticality), assignee:profiles!work_orders_assigned_to_fkey(id, full_name, craft), tasks:wo_tasks(craft, est_hours, crew_size)";
 
 type WoRow = WorkOrder & {
   asset: WorkOrderListItem["asset"];
@@ -258,15 +269,70 @@ export class SupabaseRepository implements Repository {
     unwrapVoid(await this.db.rpc("commit_work_order_plan", { p_wo_id: woId, p_plan: plan }));
   }
 
-  async scheduleWorkOrder(woId: string, date: string, assigneeId: string, actorId: string) {
-    unwrapVoid(
+  async scheduleWorkOrder(woId: string, date: string, assigneeId: string, _actorId: string) {
+    // One transaction in the database: scheduler check, date, assignee, stage, kitting, audit event.
+    unwrapVoid(await this.db.rpc("schedule_work_order", { p_wo_id: woId, p_date: date, p_assignee: assigneeId }));
+  }
+
+  async rescheduleWorkOrder(woId: string, date: string, _actorId: string, reason?: string) {
+    unwrapVoid(await this.db.rpc("reschedule_work_order", { p_wo_id: woId, p_date: date, p_reason: reason ?? null }));
+  }
+
+  async listCrew(): Promise<CrewMember[]> {
+    const [access, shifts, off] = await Promise.all([
+      this.db.from("site_access").select("user_id").eq("site_id", this.siteId),
+      this.db.from("crew_shifts").select("*").eq("site_id", this.siteId),
+      this.db.from("time_off").select("*").eq("site_id", this.siteId).order("starts_on"),
+    ]);
+    const ids = unwrap<{ user_id: string }[]>(access).map((a) => a.user_id);
+    if (ids.length === 0) return [];
+    const people = unwrap<Profile[]>(
+      await this.db.from("profiles").select("*").in("id", ids).eq("role", "technician").eq("is_active", true).order("full_name"),
+    );
+    const shiftRows = unwrap<CrewShift[]>(shifts).map((r) => ({ ...r, shift_hours: Number(r.shift_hours) }));
+    const offRows = unwrap<TimeOff[]>(off).map((r) => ({ ...r, hours_per_day: r.hours_per_day === null ? null : Number(r.hours_per_day) }));
+    return people.map((p) => ({
+      ...p,
+      shift: shiftRows.find((r) => r.profile_id === p.id) ?? null,
+      time_off: offRows.filter((r) => r.profile_id === p.id),
+    }));
+  }
+
+  async listCalendarWork(): Promise<CalendarWorkOrder[]> {
+    type Row = Omit<CalendarWorkOrder, "craft_hours" | "assignee"> & {
+      assignee: { id: string; full_name: string; craft: Craft | null } | null;
+      tasks: { craft: Craft; est_hours: number; crew_size: number }[];
+    };
+    const rows = unwrap<Row[]>(
       await this.db
         .from("work_orders")
-        .update({ scheduled_date: date, assigned_to: assigneeId, stage: "execution" })
-        .eq("id", woId),
+        .select(CALENDAR_SELECT)
+        .eq("site_id", this.siteId)
+        .eq("status", "open")
+        .neq("stage", "closure")
+        .returns<Row[]>(),
     );
-    unwrapVoid(await this.db.from("wo_parts").update({ status: "kitted" }).eq("wo_id", woId).eq("status", "reserved"));
-    await this.logEvent(woId, { event_type: "scheduled", from_stage: "scheduling", to_stage: "execution", note: date }, actorId);
+    return rows.map(({ tasks, ...w }) => {
+      const craft_hours: Partial<Record<Craft, number>> = {};
+      for (const t of tasks ?? []) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + Number(t.est_hours) * t.crew_size;
+      return { ...w, estimated_hours: w.estimated_hours === null ? null : Number(w.estimated_hours), craft_hours };
+    });
+  }
+
+  async setSchedulerRoles(roles: Role[], _actorId: string) {
+    unwrapVoid(await this.db.rpc("set_scheduler_roles", { p_site_id: this.siteId, p_roles: roles }));
+  }
+
+  async addTimeOff(input: NewTimeOffInput, actorId: string) {
+    unwrapVoid(await this.db.from("time_off").insert({ ...input, site_id: this.siteId, created_by: actorId }));
+  }
+
+  async updateShift(profileId: string, shiftHours: number, workDays: number[], _actorId: string) {
+    unwrapVoid(
+      await this.db
+        .from("crew_shifts")
+        .upsert({ site_id: this.siteId, profile_id: profileId, shift_hours: shiftHours, work_days: workDays }, { onConflict: "site_id,profile_id" }),
+    );
   }
 
   async completeTask(taskId: string, actorId: string) {

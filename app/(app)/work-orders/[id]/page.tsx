@@ -15,14 +15,14 @@ import { availableActions } from "@/lib/workflow";
 export default async function WorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { profile, repo } = await getViewer();
-  const [wo, profiles] = await Promise.all([repo.getWorkOrder(id), repo.listProfiles()]);
+  const [wo, profiles, { site }] = await Promise.all([repo.getWorkOrder(id), repo.listProfiles(), repo.getSite()]);
   if (!wo) notFound();
   // Cable work: show the route so the crew knows which tray sections to work in.
   const asset = wo.asset ? await repo.getAsset(wo.asset.id) : null;
   const cableRoute = asset?.asset_class?.code === "CABLE" ? asset : null;
   const pmSource = wo.pm_schedule_id && wo.asset ? (await repo.listPmSchedules({ assetId: wo.asset.id })).find((s) => s.id === wo.pm_schedule_id) : undefined;
 
-  const actions = availableActions(profile.role, wo);
+  const actions = availableActions(profile.role, wo, { schedulerRoles: site.scheduler_roles });
   const nameOf = (pid: string | null) => profiles.find((p) => p.id === pid)?.full_name ?? "—";
   const technicians = profiles.filter((p) => p.role === "technician");
   const crewHours = wo.tasks.reduce((s, t) => s + t.est_hours * t.crew_size, 0);
@@ -146,7 +146,15 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
               <dt className="text-tx-3">Planner</dt>
               <dd>{nameOf(wo.planner_id)}</dd>
               <dt className="text-tx-3">Scheduled</dt>
-              <dd>{formatDate(wo.scheduled_date)}</dd>
+              <dd>
+                {wo.scheduled_date ? (
+                  <Link href={`/schedule?week=${wo.scheduled_date}`} className="hover:text-brass-bright hover:underline">
+                    {formatDate(wo.scheduled_date)}
+                  </Link>
+                ) : (
+                  "—"
+                )}
+              </dd>
               <dt className="text-tx-3">Assigned</dt>
               <dd>{wo.assignee_name ?? "—"}</dd>
               <dt className="text-tx-3">Estimate</dt>
@@ -184,6 +192,8 @@ function describeEvent(type: string, to: string | null, fromPm: boolean): string
       return "committed the job plan";
     case "scheduled":
       return "scheduled the work";
+    case "rescheduled":
+      return "moved the scheduled date";
     case "task_completed":
       return "completed a step";
     case "part_issued":

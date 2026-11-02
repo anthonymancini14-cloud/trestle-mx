@@ -103,6 +103,22 @@ Planning Mode sees the asset's PM schedule and folds PMs that fall due soon into
 
 ---
 
+## Scheduling calendar
+
+One board for the scheduler: what is booked each day, what is coming, and whether the crew has the hours.
+
+| Piece | How it works |
+|---|---|
+| **Computed, not copied** | The calendar is built from the work orders and PM schedules on every render. A job pushed out, pulled forward, re-planned or deferred anywhere in the app shows in its new place; the board also refreshes every minute |
+| **What shows** | Scheduled jobs on their date with their stage; planned work waiting for a date on its due date; work not yet planned, and PMs coming due with no work order, faintly on their due or target date as forecast. Late work is drawn on today |
+| **Capacity** | From the technician roster: each tech's craft, shift hours and work days, less time off. Each day shows booked and forecast crew-hours against available hours per craft, and who is away |
+| **Drag to schedule** | Drag a scheduled job to another day to move it (logged on the work order as a reschedule, with an optional reason). Drag a ready job from the backlog onto a day, pick the technician (sorted by craft, with their free hours), and it moves to Execution. Every card also has a Move or Schedule button for keyboard and touch |
+| **Who schedules** | A site setting. An admin picks the roles (supervisor by default; admin always can). The same setting decides who sees Schedule on a work order |
+
+Target date for unplanned corrective work is the report date plus a priority target (P1 1 day, P2 7, P3 30, P4 90); PM work uses the PM due date. A job books all its hours on its scheduled day; jobs that span several days, and shift patterns that rotate over more than a week, are designed, not built. In the database, scheduling and rescheduling run as `SECURITY DEFINER` functions that check the site's scheduler roles, and a trigger refuses a date or assignee change from anyone else.
+
+---
+
 ## Cable plant
 
 At the data center, the cable plant is part of the asset register, so a cable job tells the crew exactly where to work.
@@ -131,7 +147,7 @@ Each site has a vertical (industrial/utility or data center). The core is the sa
 | 1. Identification | Anyone | A discrepancy is reported against an asset |
 | 2. Vetting | Gatekeeper | Authorized for planning, or rejected with a reason |
 | 3. **Planning** | Planner | **Planning Mode** builds the job plan; commit reserves parts |
-| 4. Scheduling | Supervisor | Date and lead technician assigned; reserved parts are kitted |
+| 4. Scheduling | Scheduler (supervisor by default; set per site) | Date and lead technician assigned on the scheduling calendar; reserved parts are kitted |
 | 5. Execution | Technician | Steps ticked off (tablet-sized targets), parts issued |
 | 6. Closure | Supervisor | Actual hours and an after-action debrief, which feeds the next plan |
 
@@ -164,9 +180,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Nineteen tables, created in dependency order by the migrations in `supabase/migrations/`:
+Twenty-one tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -221,6 +237,7 @@ app/
   (app)/work-orders         list, detail with stage actions, new (searchable asset picker)
   (app)/assets              FLOC registry, data quality, asset history
   (app)/asset-classes       class library: data standard, failure modes, PM program, coverage, critical spares
+  (app)/schedule            scheduling calendar: booked and forecast work against crew capacity, drag to schedule
   (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
   api/ai/planning           Planning Mode stream
@@ -255,7 +272,7 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
 - Tray fill tracking from cable outer diameters against each section's design fill
-- Weekly schedule builder with crew capacity
+- Scheduling: multi-day jobs, rotating shift patterns, and suggesting a week's schedule from priority, due dates and crew hours
 - Retrieval over OEM manuals as a fourth context layer
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner
 

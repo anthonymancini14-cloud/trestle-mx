@@ -78,6 +78,8 @@ async function main() {
   await insert("asset_class_spares", db.classSpares);
   await insert("pm_schedules", db.pmSchedules);
   await insert("pm_deferrals", db.pmDeferrals.map((d) => ({ ...d, approved_by: mapPerson(d.approved_by) })));
+  await insert("crew_shifts", db.crewShifts.map((c) => ({ ...c, profile_id: mapPerson(c.profile_id) })));
+  await insert("time_off", db.timeOff.map((t) => ({ ...t, profile_id: mapPerson(t.profile_id), created_by: mapPerson(t.created_by) })));
   await insert(
     "work_orders",
     db.workOrders.map((w) => ({

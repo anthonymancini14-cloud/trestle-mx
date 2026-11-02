@@ -20,6 +20,7 @@ export const DC_SITE: Site = {
   name: "Cedar Flats Data Center",
   timezone: "America/Denver",
   vertical: "data_center",
+  scheduler_roles: ["supervisor"],
 };
 
 const AREA_DEFS: [string, string][] = [

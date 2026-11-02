@@ -38,6 +38,7 @@ export const SITE: Site = {
   name: "Basalt Ridge Plant",
   timezone: "America/Los_Angeles",
   vertical: "industrial_utility",
+  scheduler_roles: ["supervisor"],
 };
 
 const AREA_DEFS: [string, string][] = [
@@ -384,7 +385,7 @@ export const WO_DEFS: WoDef[] = [
     title: "Cooling water pump packing adjustment",
     description: "Packing leakage excessive, water spraying onto bearing housing.",
     floc: "BRP-CTW-P-602", type: "corrective", priority: 3, stage: "execution",
-    reportedBy: "Jordan", assignedTo: "Jordan", createdDaysAgo: 6, scheduledInDays: 0, estHours: 2,
+    reportedBy: "Jordan", assignedTo: "Jordan", createdDaysAgo: 6, scheduledInDays: 1, estHours: 2,
     tasks: [
       { desc: "Adjust gland evenly, observe leakage for 15 minutes", craft: "mechanical", hours: 0.5, done: true },
       { desc: "If leakage cannot be brought to steady drip, repack with 3/8 in PTFE", craft: "mechanical", hours: 1.5 },
@@ -397,7 +398,7 @@ export const WO_DEFS: WoDef[] = [
     title: "Air compressor 4000-hour service",
     description: "Scheduled 4,000-hour service: separator, oil filter, intake filter, fluid change.",
     floc: "BRP-AIR-C-801", type: "preventive", priority: 3, stage: "execution",
-    reportedBy: "Marcus", assignedTo: "Devon", createdDaysAgo: 14, scheduledInDays: 0, estHours: 3,
+    reportedBy: "Marcus", assignedTo: "Devon", createdDaysAgo: 14, scheduledInDays: 2, estHours: 3,
     tasks: [
       { desc: "Lock out compressor, bleed down sump pressure to zero", craft: "mechanical", hours: 0.5 },
       { desc: "Drain fluid, replace oil filter and separator element, refill", craft: "mechanical", hours: 2 },

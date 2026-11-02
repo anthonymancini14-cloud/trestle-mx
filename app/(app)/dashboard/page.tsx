@@ -13,11 +13,11 @@ export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   const { profile, repo } = await getViewer();
-  const [workOrders, inventory] = await Promise.all([repo.listWorkOrders(), repo.listInventory()]);
+  const [workOrders, inventory, { site }] = await Promise.all([repo.listWorkOrders(), repo.listInventory(), repo.getSite()]);
   const m = computeMetrics(workOrders, inventory);
 
   const mine = workOrders
-    .map((w) => ({ wo: w, actions: availableActions(profile.role, w) }))
+    .map((w) => ({ wo: w, actions: availableActions(profile.role, w, { schedulerRoles: site.scheduler_roles }) }))
     .filter(({ wo, actions }) => {
       if (actions.length === 0) return false;
       // Technicians see their own jobs, not every job in execution.

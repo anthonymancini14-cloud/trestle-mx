@@ -6,11 +6,12 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { DEMO_SITE_COOKIE, DEMO_USER_COOKIE, SITE_COOKIE, demoProfileFor, getViewer } from "@/lib/auth/viewer";
 import { isLiveMode } from "@/lib/config";
+import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canPm, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
-import type { WorkOrderDetail } from "@/types/domain";
+import { assertCan, canPm, canReschedule, canScheduleAt, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
+import { ROLES, type WorkOrderDetail } from "@/types/domain";
 
 export type ActionResult = { ok: true } | { ok: false, error: string };
 
@@ -24,7 +25,8 @@ async function withWorkOrder(
     const viewer = await getViewer();
     const wo = await viewer.repo.getWorkOrder(woId);
     if (!wo) return { ok: false, error: "Work order not found." };
-    assertCan(action, viewer.profile.role, wo);
+    const { site } = await viewer.repo.getSite();
+    assertCan(action, viewer.profile.role, wo, { schedulerRoles: site.scheduler_roles });
     await run({ ...viewer, wo });
     revalidatePath("/", "layout");
     return { ok: true };
@@ -62,7 +64,11 @@ export async function scheduleWorkOrder(woId: string, date: string, assigneeId: 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !assigneeId) {
     return { ok: false, error: "Pick a date and a technician." } satisfies ActionResult;
   }
-  return withWorkOrder(woId, "schedule", ({ repo, profile }) => repo.scheduleWorkOrder(woId, date, assigneeId, profile.id));
+  return withWorkOrder(woId, "schedule", async ({ repo, profile }) => {
+    const crew = await repo.listCrew();
+    if (!crew.some((m) => m.id === assigneeId)) throw new WorkflowError("Assign a technician on this site's roster.");
+    await repo.scheduleWorkOrder(woId, date, assigneeId, profile.id);
+  });
 }
 
 export async function completeTask(woId: string, taskId: string) {
@@ -129,13 +135,12 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
 
 // ---------------------------------------------------------------- PM program
 
-const today = () => new Date().toISOString().slice(0, 10);
-
 export async function generateDuePms(): Promise<ActionResult & { created?: number }> {
   try {
     const { repo, profile } = await getViewer();
     if (!canPm("generate", profile.role)) return { ok: false, error: "Generating PM work orders is for planners and admins." };
-    const created = await repo.generateDuePms(today(), profile.id);
+    const { site } = await repo.getSite();
+    const created = await repo.generateDuePms(todayAt(site.timezone), profile.id);
     revalidatePath("/", "layout");
     return { ok: true, created };
   } catch (error) {
@@ -163,6 +168,94 @@ export async function deferPm(input: { scheduleId: string; toDate: string; reaso
     const message = error instanceof Error && /after the current due date/.test(error.message) ? error.message : "Something went wrong saving the deferral.";
     if (message.startsWith("Something")) console.error("Defer PM failed", error);
     return { ok: false, error: message };
+  }
+}
+
+// ---------------------------------------------------------------- scheduling calendar
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date.");
+
+/** Run a calendar mutation for someone who can schedule at this site (TMX-015). */
+async function asScheduler(run: (ctx: Awaited<ReturnType<typeof getViewer>>) => Promise<void>, failure: string): Promise<ActionResult> {
+  try {
+    const viewer = await getViewer();
+    const { site } = await viewer.repo.getSite();
+    if (!canScheduleAt(viewer.profile.role, { schedulerRoles: site.scheduler_roles })) {
+      return { ok: false, error: "Only a scheduler at this site can change the schedule." };
+    }
+    await run(viewer);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof WorkflowError) return { ok: false, error: error.message };
+    console.error(failure, error);
+    return { ok: false, error: failure };
+  }
+}
+
+/** Drag on the calendar: move a scheduled job to another day. Logged on the work order (TMX-017). */
+export async function rescheduleWorkOrder(input: { woId: string; date: string; reason?: string }): Promise<ActionResult> {
+  const parsed = z.object({ woId: z.string().min(1), date: isoDate, reason: z.string().trim().max(500).optional() }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the move." };
+  return asScheduler(async ({ repo, profile }) => {
+    const wo = await repo.getWorkOrder(parsed.data.woId);
+    const { site } = await repo.getSite();
+    if (!wo || !canReschedule(profile.role, wo, { schedulerRoles: site.scheduler_roles })) {
+      throw new WorkflowError("Only scheduled work in Execution can be moved. Plan and schedule it first.");
+    }
+    await repo.rescheduleWorkOrder(wo.id, parsed.data.date, profile.id, parsed.data.reason || undefined);
+  }, "Something went wrong moving that job.");
+}
+
+const timeOffSchema = z
+  .object({
+    profileId: z.string().min(1),
+    startsOn: isoDate,
+    endsOn: isoDate,
+    hoursPerDay: z.number().positive().max(16).nullable(),
+    reason: z.string().trim().min(3, "Say why (vacation, training, …)."),
+  })
+  .refine((v) => v.endsOn >= v.startsOn, { message: "The end date is before the start date." });
+
+export async function addTimeOff(input: z.input<typeof timeOffSchema>): Promise<ActionResult> {
+  const parsed = timeOffSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the time off." };
+  const v = parsed.data;
+  return asScheduler(async ({ repo, profile }) => {
+    if (!(await repo.listCrew()).some((m) => m.id === v.profileId && m.shift)) throw new WorkflowError("That person isn't on this site's roster.");
+    await repo.addTimeOff({ profile_id: v.profileId, starts_on: v.startsOn, ends_on: v.endsOn, hours_per_day: v.hoursPerDay, reason: v.reason }, profile.id);
+  }, "Something went wrong saving the time off.");
+}
+
+const shiftSchema = z.object({
+  profileId: z.string().min(1),
+  shiftHours: z.number().positive("Shift hours must be more than zero.").max(16, "A shift can be at most 16 hours."),
+  workDays: z.array(z.number().int().min(0).max(6)).min(1, "Pick at least one work day."),
+});
+
+export async function updateShift(input: z.input<typeof shiftSchema>): Promise<ActionResult> {
+  const parsed = shiftSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the shift." };
+  const v = parsed.data;
+  return asScheduler(async ({ repo, profile }) => {
+    if (!(await repo.listCrew()).some((m) => m.id === v.profileId)) throw new WorkflowError("That person isn't a technician at this site.");
+    await repo.updateShift(v.profileId, v.shiftHours, [...new Set(v.workDays)].sort(), profile.id);
+  }, "Something went wrong saving the shift.");
+}
+
+/** Admin only: which roles schedule at this site (TMX-015). */
+export async function setSchedulerRoles(roles: string[]): Promise<ActionResult> {
+  const parsed = z.array(z.enum(ROLES)).safeParse(roles);
+  if (!parsed.success) return { ok: false, error: "Unknown role." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (profile.role !== "admin") return { ok: false, error: "Only an admin changes who schedules." };
+    await repo.setSchedulerRoles(parsed.data.filter((r) => r !== "admin"), profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Set scheduler roles failed", error);
+    return { ok: false, error: "Something went wrong saving the setting." };
   }
 }
 

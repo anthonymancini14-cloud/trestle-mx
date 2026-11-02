@@ -94,6 +94,15 @@ body {
   );
 }
 
+/* Forecast load on the scheduling calendar: striped so it reads as not yet booked */
+.hazard-fill {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--tx) 25%, transparent) 0 2px,
+    transparent 2px 4px
+  );
+}
+
 /* Blueprint grid for the landing hero */
 .blueprint {
   background-image:

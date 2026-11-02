@@ -72,6 +72,8 @@ export interface Site {
   name: string;
   timezone: string;
   vertical: Vertical;
+  /** Roles that may schedule and move work on the calendar at this site. Admin always can (TMX-015). */
+  scheduler_roles: Role[];
 }
 
 export interface AreaCode {
@@ -290,6 +292,7 @@ export type WoEventType =
   | "task_completed"
   | "part_issued"
   | "closed"
+  | "rescheduled"
   | "note";
 
 export interface WoEvent {
@@ -409,4 +412,67 @@ export type RouteStep = Pick<CableRouteSegment, "seq" | "note"> & {
 
 export interface InventoryItem extends InventoryRow {
   part: Part;
+}
+
+// ---------------------------------------------------------------- Scheduling
+
+export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "operations", "contractor"];
+
+export const CRAFT_LABELS: Record<Craft, string> = {
+  mechanical: "Mechanical",
+  electrical: "Electrical",
+  instrumentation: "Instrumentation",
+  operations: "Operations",
+  contractor: "Contractor",
+};
+
+/** A technician's regular shift at a site: hours per shift and the weekdays worked (0 = Sunday). */
+export interface CrewShift {
+  id: string;
+  site_id: string;
+  profile_id: string;
+  shift_hours: number;
+  work_days: number[];
+}
+
+/** Time a technician is away. `hours_per_day` null means the whole shift. Inclusive dates. */
+export interface TimeOff {
+  id: string;
+  site_id: string;
+  profile_id: string;
+  starts_on: string;
+  ends_on: string;
+  hours_per_day: number | null;
+  reason: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** A technician on the site roster, with the shift and time off that set their capacity (TMX-016). */
+export interface CrewMember extends Profile {
+  shift: CrewShift | null;
+  time_off: TimeOff[];
+}
+
+/** An open work order as the scheduling calendar needs it. */
+export interface CalendarWorkOrder
+  extends Pick<
+    WorkOrder,
+    | "id"
+    | "wo_number"
+    | "title"
+    | "stage"
+    | "priority"
+    | "wo_type"
+    | "requires_shutdown"
+    | "scheduled_date"
+    | "assigned_to"
+    | "estimated_hours"
+    | "pm_schedule_id"
+    | "created_at"
+  > {
+  asset: Pick<Asset, "id" | "floc" | "name" | "criticality"> | null;
+  assignee: Pick<Profile, "id" | "full_name" | "craft"> | null;
+  /** Crew-hours by craft from the job plan (est hours × crew size). Empty until the job is planned. */
+  craft_hours: Partial<Record<Craft, number>>;
 }

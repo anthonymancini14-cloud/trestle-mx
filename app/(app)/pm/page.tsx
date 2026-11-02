@@ -5,7 +5,7 @@ import { PmTable } from "@/components/pm/pm-table";
 import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { daysBetween, dueState, summarizeProgram, type DueState } from "@/lib/pm/program";
-import { cn, formatDay } from "@/lib/utils";
+import { cn, formatDay, todayAt } from "@/lib/utils";
 import { canPm } from "@/lib/workflow";
 
 export const metadata = { title: "PM program" };
@@ -24,7 +24,7 @@ export default async function PmProgramPage({ searchParams }: { searchParams: Pr
   const [schedules, assets, { site }, classes] = await Promise.all([repo.listPmSchedules(), repo.listAssets(), repo.getSite(), repo.listAssetClasses()]);
   const modeNames: Record<string, string> = {};
   for (const c of classes) for (const m of c.failure_modes) modeNames[m.code] ??= m.name;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayAt(site.timezone);
   const summary = summarizeProgram(schedules, today);
   const rows = schedules.map((s) => ({ ...s, state: dueState(s.next_due_on, today), days: daysBetween(today, s.next_due_on) }));
   const counts = Object.fromEntries(FILTERS.map((f) => [f.key, 0])) as Record<string, number>;

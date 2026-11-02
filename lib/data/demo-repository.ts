@@ -2,12 +2,16 @@ import "server-only";
 import { buildDataset, DEFAULT_DEMO_SITE_ID, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import { dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
-import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
+  CalendarWorkOrder,
+  Craft,
+  CrewMember,
   InventoryItem,
   PmScheduleRow,
+  Role,
   Site,
   WoEvent,
   WoStage,
@@ -333,6 +337,83 @@ export class DemoRepository implements Repository {
     if (schedule) {
       schedule.last_done_on = wo.closed_at.slice(0, 10);
       schedule.next_due_on = nextDueAfter(schedule.last_done_on, schedule.interval_days);
+    }
+  }
+
+  async listCrew(): Promise<CrewMember[]> {
+    const db = store();
+    return (await this.listProfiles())
+      .filter((p) => p.role === "technician" && p.is_active)
+      .map((p) => ({
+        ...p,
+        shift: db.crewShifts.find((c) => c.site_id === this.siteId && c.profile_id === p.id) ?? null,
+        time_off: db.timeOff
+          .filter((t) => t.site_id === this.siteId && t.profile_id === p.id)
+          .sort((a, b) => a.starts_on.localeCompare(b.starts_on)),
+      }));
+  }
+
+  async listCalendarWork(): Promise<CalendarWorkOrder[]> {
+    const db = store();
+    return db.workOrders
+      .filter((w) => w.site_id === this.siteId && w.status === "open" && w.stage !== "closure")
+      .map((w) => {
+        const item = toListItem(db, w);
+        const assignee = w.assigned_to ? db.profiles.find((p) => p.id === w.assigned_to) : undefined;
+        const craft_hours: Partial<Record<Craft, number>> = {};
+        for (const t of db.tasks.filter((t) => t.wo_id === w.id)) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        return {
+          id: w.id,
+          wo_number: w.wo_number,
+          title: w.title,
+          stage: w.stage,
+          priority: w.priority,
+          wo_type: w.wo_type,
+          requires_shutdown: w.requires_shutdown,
+          scheduled_date: w.scheduled_date,
+          assigned_to: w.assigned_to,
+          estimated_hours: w.estimated_hours,
+          pm_schedule_id: w.pm_schedule_id,
+          created_at: w.created_at,
+          asset: item.asset,
+          assignee: assignee ? { id: assignee.id, full_name: assignee.full_name, craft: assignee.craft } : null,
+          craft_hours,
+        };
+      });
+  }
+
+  async rescheduleWorkOrder(woId: string, date: string, actorId: string, reason?: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open" || wo.stage !== "execution" || !wo.scheduled_date) throw new Error("Only scheduled work can be moved");
+    if (wo.scheduled_date === date) return;
+    const note = `${wo.scheduled_date} → ${date}${reason ? `: ${reason}` : ""}`;
+    wo.scheduled_date = date;
+    wo.updated_at = nowIso();
+    logEvent(db, { wo_id: woId, event_type: "rescheduled", from_stage: null, to_stage: null, note, actor_id: actorId });
+  }
+
+  async setSchedulerRoles(roles: Role[], _actorId: string) {
+    const site = store().sites.find((s) => s.id === this.siteId);
+    if (!site) throw new Error("Site not found");
+    site.scheduler_roles = roles.filter((r) => r !== "admin");
+  }
+
+  async addTimeOff(input: NewTimeOffInput, actorId: string) {
+    const db = store();
+    if (!db.crewShifts.some((c) => c.site_id === this.siteId && c.profile_id === input.profile_id)) throw new Error("Not on this site's roster");
+    db.timeOff.push({ ...input, id: newId(), site_id: this.siteId, created_by: actorId, created_at: nowIso() });
+  }
+
+  async updateShift(profileId: string, shiftHours: number, workDays: number[], _actorId: string) {
+    const db = store();
+    const shift = db.crewShifts.find((c) => c.site_id === this.siteId && c.profile_id === profileId);
+    if (shift) {
+      shift.shift_hours = shiftHours;
+      shift.work_days = [...workDays].sort();
+    } else {
+      if (!db.siteAccess.some((a) => a.site_id === this.siteId && a.user_id === profileId)) throw new Error("Not at this site");
+      db.crewShifts.push({ id: newId(), site_id: this.siteId, profile_id: profileId, shift_hours: shiftHours, work_days: [...workDays].sort() });
     }
   }
 

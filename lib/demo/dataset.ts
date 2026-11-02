@@ -34,6 +34,7 @@ import type {
   AssetClassWithModes,
   CableRouteSegment,
   ClassSpare,
+  CrewShift,
   FailureMode,
   InventoryRow,
   Organization,
@@ -43,6 +44,7 @@ import type {
   PmTask,
   Profile,
   Site,
+  TimeOff,
   WoEvent,
   WoPart,
   WoTask,
@@ -66,6 +68,8 @@ export interface Dataset {
   classSpares: ClassSpare[];
   pmSchedules: PmSchedule[];
   pmDeferrals: PmDeferral[];
+  crewShifts: CrewShift[];
+  timeOff: TimeOff[];
   assets: Asset[];
   cableRoutes: CableRouteSegment[];
   parts: Part[];
@@ -207,6 +211,39 @@ const SEED_DEFERRALS: [string, string, number, string, string][] = [
   ["BRP-INT-SCR-101", "SCREEN-TWS-PM03", 30, "River level too high to dewater the intake bay safely; reschedule after the spring runoff.", "Lena"],
 ];
 
+/**
+ * Technician shifts: [first name, hours per shift, weekdays worked (0 = Sunday)].
+ * Basalt Ridge runs a weekday plant crew on 10s and 8s; Cedar Flats staggers
+ * its 10-hour shifts so a mechanic covers the weekend.
+ */
+const SEED_SHIFTS: [string, number, number[]][] = [
+  ["Jordan", 10, [1, 2, 3, 4]],
+  ["Devon", 10, [2, 3, 4, 5]],
+  ["Alex", 8, [1, 2, 3, 4, 5]],
+  ["Riley", 8, [1, 2, 3, 4, 5]],
+  ["Tasha", 10, [1, 2, 3, 4]],
+  ["Mateo", 10, [0, 4, 5, 6]],
+  ["Kai", 10, [2, 3, 4, 5]],
+  ["Rafael", 8, [1, 2, 3, 4, 5]],
+];
+
+/** Time off: [first name, starts in days, ends in days, hours per day (null = whole shift), reason]. */
+const SEED_TIME_OFF: [string, number, number, number | null, string][] = [
+  ["Jordan", 2, 3, null, "Vacation"],
+  ["Kai", 1, 1, 4, "NFPA 70E refresher"],
+  ["Alex", 8, 12, null, "Vacation"],
+  ["Tasha", 9, 9, 5, "Vendor UPS training"],
+];
+
+/** The first day on or after `date` that the person works, so seeded jobs never land on a day off. */
+function onShiftDay(firstName: string | undefined, date: string): string {
+  const days = SEED_SHIFTS.find(([name]) => name === firstName)?.[2];
+  if (!days) return date;
+  let d = date;
+  while (!days.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) d = addDays(d, 1);
+  return d;
+}
+
 /** Expand the seed definitions into normalized rows with real timestamps. */
 export function buildDataset(now: Date = new Date()): Dataset {
   const at = (daysAgo: number, hourOffset = 0) =>
@@ -331,7 +368,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
         assigned_to: def.assignedTo ? personId(def.assignedTo) : null,
         scheduled_date:
           def.scheduledInDays !== undefined
-            ? dateIn(def.scheduledInDays)
+            ? onShiftDay(def.assignedTo, dateIn(def.scheduledInDays))
             : stageIndex >= WO_STAGES.indexOf("execution")
               ? at(stageDaysAgo(WO_STAGES.indexOf("execution"))).slice(0, 10)
               : null,
@@ -427,15 +464,38 @@ export function buildDataset(now: Date = new Date()): Dataset {
     };
   });
 
+  const siteOf = (profileId: string) => SITE_ACCESS.find((a) => a.user_id === profileId)!.site_id;
+  const crewShifts: CrewShift[] = SEED_SHIFTS.map(([name, hours, days], i) => ({
+    id: seedId("crewShift", i + 1),
+    site_id: siteOf(personId(name)),
+    profile_id: personId(name),
+    shift_hours: hours,
+    work_days: days,
+  }));
+  const timeOff: TimeOff[] = SEED_TIME_OFF.map(([name, from, to, hours, reason], i) => ({
+    id: seedId("timeOff", i + 1),
+    site_id: siteOf(personId(name)),
+    profile_id: personId(name),
+    starts_on: dateIn(from),
+    ends_on: dateIn(to),
+    hours_per_day: hours,
+    reason,
+    created_by: null,
+    created_at: at(5),
+  }));
+
   return {
     org: ORG,
-    sites: DEMO_SITES,
+    // Copies, so a settings change in the demo store never edits the seed.
+    sites: DEMO_SITES.map((site) => ({ ...site, scheduler_roles: [...site.scheduler_roles] })),
     areas: [...AREAS, ...DC_AREAS],
     profiles: ALL_PROFILES,
     siteAccess: SITE_ACCESS,
     ...library,
     pmSchedules,
     pmDeferrals,
+    crewShifts,
+    timeOff,
     assets: ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
     cableRoutes: buildCableRoutes(),
     parts: ALL_PARTS,
