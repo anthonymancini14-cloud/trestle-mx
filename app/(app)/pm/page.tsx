@@ -1,9 +1,8 @@
 import Link from "next/link";
 import { QualityStat, qualityTone } from "@/components/assets/data-quality";
-import { DueBadge, intervalLabel, StrategyBadge } from "@/components/pm/pm-badges";
-import { DeferPmForm, GeneratePmsButton } from "@/components/pm/pm-controls";
-import { CriticalityBadge, StageBadge } from "@/components/status";
-import { EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
+import { GeneratePmsButton } from "@/components/pm/pm-controls";
+import { PmTable } from "@/components/pm/pm-table";
+import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { daysBetween, dueState, summarizeProgram, type DueState } from "@/lib/pm/program";
 import { cn, formatDay } from "@/lib/utils";
@@ -22,7 +21,9 @@ const FILTERS: { key: "attention" | DueState | "all"; label: string }[] = [
 export default async function PmProgramPage({ searchParams }: { searchParams: Promise<{ show?: string }> }) {
   const { show = "attention" } = await searchParams;
   const { repo, profile } = await getViewer();
-  const [schedules, assets, { site }] = await Promise.all([repo.listPmSchedules(), repo.listAssets(), repo.getSite()]);
+  const [schedules, assets, { site }, classes] = await Promise.all([repo.listPmSchedules(), repo.listAssets(), repo.getSite(), repo.listAssetClasses()]);
+  const modeNames: Record<string, string> = {};
+  for (const c of classes) for (const m of c.failure_modes) modeNames[m.code] ??= m.name;
   const today = new Date().toISOString().slice(0, 10);
   const summary = summarizeProgram(schedules, today);
   const rows = schedules.map((s) => ({ ...s, state: dueState(s.next_due_on, today), days: daysBetween(today, s.next_due_on) }));
@@ -78,73 +79,7 @@ export default async function PmProgramPage({ searchParams }: { searchParams: Pr
       </nav>
 
       <Panel>
-        {visible.length === 0 ? (
-          <EmptyState>Nothing here. Every PM in this view is current.</EmptyState>
-        ) : (
-          <Table>
-            <thead>
-              <tr>
-                <Th>Asset</Th>
-                <Th>PM task</Th>
-                <Th className="hidden 2xl:table-cell">Addresses</Th>
-                <Th>Interval</Th>
-                <Th className="hidden xl:table-cell">Last done</Th>
-                <Th>Next due</Th>
-                <Th>Work order</Th>
-                {canDefer && <Th className="w-24" />}
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((r) => (
-                <tr key={r.id} className="hover:bg-panel-2">
-                  <Td>
-                    <Link href={`/assets/${r.asset.id}`} className="block">
-                      <Mono className="text-xs">{r.asset.floc}</Mono>
-                      <div className="flex items-center gap-1.5 text-xs text-tx-2">
-                        <span className="truncate">{r.asset.name}</span> <CriticalityBadge criticality={r.asset.criticality} />
-                      </div>
-                    </Link>
-                  </Td>
-                  <Td className="min-w-56">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Mono className="text-[11px] text-tx-3">{r.task.code}</Mono>
-                      <StrategyBadge strategy={r.task.strategy} />
-                      <span className="font-mono text-[11px] text-tx-3 2xl:hidden">{r.task.failure_mode_codes.join(" ")}</span>
-                    </div>
-                    <div className="text-sm">{r.task.title}</div>
-                    {r.deferrals[0] && (
-                      <div className="mt-0.5 text-xs text-warn" title={r.deferrals[0].reason}>
-                        Deferred {r.deferrals.length}× · {r.deferrals[0].approver_name ?? "supervisor"}: {r.deferrals[0].reason}
-                      </div>
-                    )}
-                  </Td>
-                  <Td className="hidden font-mono text-xs text-tx-2 2xl:table-cell">{r.task.failure_mode_codes.join(" ")}</Td>
-                  <Td className="whitespace-nowrap text-xs">{intervalLabel(r.interval_days)}</Td>
-                  <Td className="hidden whitespace-nowrap text-xs text-tx-3 xl:table-cell">{formatDay(r.last_done_on)}</Td>
-                  <Td className="whitespace-nowrap">
-                    <div className="text-xs">{formatDay(r.next_due_on)}</div>
-                    <DueBadge state={r.state} days={r.days} />
-                  </Td>
-                  <Td>
-                    {r.open_wo ? (
-                      <Link href={`/work-orders/${r.open_wo.id}`} className="flex flex-col gap-0.5">
-                        <Mono className="whitespace-nowrap text-xs">{r.open_wo.wo_number}</Mono>
-                        <StageBadge stage={r.open_wo.stage} status="open" />
-                      </Link>
-                    ) : (
-                      <span className="text-xs text-tx-3">—</span>
-                    )}
-                  </Td>
-                  {canDefer && (
-                    <Td className="text-right">
-                      <DeferPmForm scheduleId={r.id} currentDue={r.next_due_on} />
-                    </Td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-        )}
+        <PmTable rows={visible} modeNames={modeNames} canDefer={canDefer} />
       </Panel>
 
       <Panel>
