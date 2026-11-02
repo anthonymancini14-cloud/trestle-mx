@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { JobPlan } from "@/lib/planning/plan-schema";
+import { PM_LEAD_DAYS } from "@/lib/pm/program";
 import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AreaCode,
@@ -11,6 +12,7 @@ import type {
   InventoryRow,
   Organization,
   Part,
+  PmScheduleRow,
   Profile,
   Site,
   WoEvent,
@@ -41,6 +43,8 @@ function toListItem(row: WoRow): WorkOrderListItem {
   const { assignee, ...rest } = row;
   return { ...rest, assignee_name: assignee?.full_name ?? null };
 }
+
+const CLASS_SELECT = "*, failure_modes:asset_class_failure_modes(*), pm_tasks(*), spares:asset_class_spares(*)";
 
 type Result<T> = { data: T | null; error: { message: string } | null };
 
@@ -134,7 +138,7 @@ export class SupabaseRepository implements Repository {
       this.db.from("assets").select("id, floc, name, status").eq("parent_id", id).order("floc"),
       this.listWorkOrders({ assetId: id }),
       asset.class_id
-        ? this.db.from("asset_classes").select("*, failure_modes:asset_class_failure_modes(*)").eq("id", asset.class_id).maybeSingle()
+        ? this.db.from("asset_classes").select(CLASS_SELECT).eq("id", asset.class_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       this.db
         .from("cable_routes")
@@ -167,13 +171,55 @@ export class SupabaseRepository implements Repository {
     const rows = unwrap<AssetClassWithModes[]>(
       await this.db
         .from("asset_classes")
-        .select("*, failure_modes:asset_class_failure_modes(*)")
+        .select(CLASS_SELECT)
         .eq("org_id", org.id)
         .eq("is_active", true)
         .order("category")
         .order("name"),
     );
     return rows.map(sortModes);
+  }
+
+  async listPmSchedules(filter: { assetId?: string } = {}): Promise<PmScheduleRow[]> {
+    let query = this.db
+      .from("pm_schedules")
+      .select(
+        "*, asset:assets(id, floc, name, criticality), task:pm_tasks(*), deferrals:pm_deferrals(*, approver:profiles(full_name))",
+      )
+      .eq("site_id", this.siteId)
+      .order("next_due_on");
+    if (filter.assetId) query = query.eq("asset_id", filter.assetId);
+    type Row = Omit<PmScheduleRow, "open_wo" | "deferrals"> & {
+      deferrals: (PmScheduleRow["deferrals"][number] & { approver: { full_name: string } | null })[];
+    };
+    const rows = unwrap<Row[]>(await query);
+    const ids = rows.map((r) => r.id);
+    const open = ids.length
+      ? unwrap<{ id: string; wo_number: string; stage: WoStage; pm_schedule_id: string }[]>(
+          await this.db.from("work_orders").select("id, wo_number, stage, pm_schedule_id").eq("status", "open").in("pm_schedule_id", ids),
+        )
+      : [];
+    return rows.map((r) => {
+      const wo = open.find((w) => w.pm_schedule_id === r.id);
+      return {
+        ...r,
+        open_wo: wo ? { id: wo.id, wo_number: wo.wo_number, stage: wo.stage } : null,
+        deferrals: (r.deferrals ?? [])
+          .map(({ approver, ...d }) => ({ ...d, approver_name: approver?.full_name ?? null }))
+          .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      };
+    });
+  }
+
+  async generateDuePms(asOf: string, _actorId: string): Promise<number> {
+    // Atomic in the database: role and site checks, work orders, tasks and events.
+    const { data, error } = await this.db.rpc("generate_due_pms", { p_site_id: this.siteId, p_as_of: asOf, p_lead_days: PM_LEAD_DAYS });
+    if (error) throw new Error(error.message);
+    return (data as number) ?? 0;
+  }
+
+  async deferPm(scheduleId: string, toDate: string, reason: string, _actorId: string) {
+    unwrapVoid(await this.db.rpc("defer_pm", { p_schedule_id: scheduleId, p_to: toDate, p_reason: reason }));
   }
 
   async listInventory() {
@@ -266,5 +312,10 @@ function unwrapVoid(result: { error: { message: string } | null }): void {
 }
 
 function sortModes(c: AssetClassWithModes): AssetClassWithModes {
-  return { ...c, failure_modes: [...(c.failure_modes ?? [])].sort((a, b) => a.code.localeCompare(b.code)) };
+  return {
+    ...c,
+    failure_modes: [...(c.failure_modes ?? [])].sort((a, b) => a.code.localeCompare(b.code)),
+    pm_tasks: [...(c.pm_tasks ?? [])].sort((a, b) => a.code.localeCompare(b.code)),
+    spares: c.spares ?? [],
+  };
 }

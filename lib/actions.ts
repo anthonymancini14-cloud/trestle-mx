@@ -9,7 +9,7 @@ import { isLiveMode } from "@/lib/config";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
+import { assertCan, canPm, nextStage, WorkflowError, type WoAction } from "@/lib/workflow";
 import type { WorkOrderDetail } from "@/types/domain";
 
 export type ActionResult = { ok: true } | { ok: false, error: string };
@@ -125,6 +125,45 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
   );
   revalidatePath("/", "layout");
   redirect(`/work-orders/${id}`);
+}
+
+// ---------------------------------------------------------------- PM program
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+export async function generateDuePms(): Promise<ActionResult & { created?: number }> {
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canPm("generate", profile.role)) return { ok: false, error: "Generating PM work orders is for planners and admins." };
+    const created = await repo.generateDuePms(today(), profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true, created };
+  } catch (error) {
+    console.error("Generate PMs failed", error);
+    return { ok: false, error: "Something went wrong generating PM work orders." };
+  }
+}
+
+const deferSchema = z.object({
+  scheduleId: z.string().min(1),
+  toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a new due date."),
+  reason: z.string().trim().min(10, "Give a reason of at least a few words; deferrals are reviewed."),
+});
+
+export async function deferPm(input: { scheduleId: string; toDate: string; reason: string }): Promise<ActionResult> {
+  const parsed = deferSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the deferral." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canPm("defer", profile.role)) return { ok: false, error: "Every PM deferral needs a supervisor." };
+    await repo.deferPm(parsed.data.scheduleId, parsed.data.toDate, parsed.data.reason, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error && /after the current due date/.test(error.message) ? error.message : "Something went wrong saving the deferral.";
+    if (message.startsWith("Something")) console.error("Defer PM failed", error);
+    return { ok: false, error: message };
+  }
 }
 
 // ---------------------------------------------------------------- site switching

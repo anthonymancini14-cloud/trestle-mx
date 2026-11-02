@@ -84,6 +84,25 @@ The register shows **data quality against the standard**: share of assets classi
 
 ---
 
+## PM program
+
+PM strategy lives in the class library, so every site maintains the same equipment the same way, and every task can be defended by what it prevents.
+
+| Piece | How it works |
+|---|---|
+| **PM tasks per class** | Strategy (time-based, condition-based, failure-finding), craft, hours, interval, and the **failure modes it addresses**. Starter intervals from general practice, marked as defaults to tune to OEM guidance and site history |
+| **Criticality decides the program** | Each task lists the criticalities that get it and can shorten the interval for crit A. A class can be **run to failure** at a criticality: no PM, and no coverage warning |
+| **Failure mode coverage** | Each class shows, per criticality, which tasks cover each failure mode and which modes have none, so gaps are visible and tasks with no purpose can't hide |
+| **Maintenance index** | One schedule per asset per applicable task: interval, last done, next due. The PM program page shows compliance, overdue and due work across the site |
+| **Generation** | PMs due within 14 days become work orders with the template's plan and go straight to Scheduling (no vetting) |
+| **Deferrals** | Every deferral needs a supervisor, a reason and a later date. It's logged on the schedule and noted on the open work order |
+| **Completion** | Closing a PM work order restarts its interval from the completion date |
+| **Critical spares** | Parts each site must hold for its crit A assets of a class (optionally one model), checked against the storeroom |
+
+Planning Mode sees the asset's PM schedule and folds PMs that fall due soon into the same outage. In the database, generation and deferral run as `SECURITY DEFINER` functions that re-check role and site, deferrals are append-only, and a trigger advances the schedule when a PM closes.
+
+---
+
 ## Cable plant
 
 At the data center, the cable plant is part of the asset register, so a cable job tells the crew exactly where to work.
@@ -145,9 +164,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Fifteen tables, created in dependency order by the migrations in `supabase/migrations/`:
+Nineteen tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections) · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical) → `area_codes` · `profiles` → `site_access` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -201,7 +220,8 @@ app/
   (app)/planning            Planning queue and Planning Mode
   (app)/work-orders         list, detail with stage actions, new (searchable asset picker)
   (app)/assets              FLOC registry, data quality, asset history
-  (app)/asset-classes       class library: data standard and failure modes per class
+  (app)/asset-classes       class library: data standard, failure modes, PM program, coverage, critical spares
+  (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
@@ -211,11 +231,12 @@ lib/
   data/                     Repository interface, demo and Supabase implementations
   anthropic/                Claude planner, prompt, context loader, site context (layer 3)
   planning/                 plan schema, stream protocol, scripted demo planner
-  taxonomy/                 asset class library and data-quality checks
+  taxonomy/                 asset class library, starter PM programs and data-quality checks
+  pm/                       PM program logic: applicability, due dates, coverage, spares, generated plans
   assets/                   asset search for pickers
   demo/                     fictional sites: data center and utility plant
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, cable plant, sites
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites
 ```
 
 ## Design decisions
@@ -230,7 +251,6 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 ## Roadmap
 
 - Planning session history saved per work order (`planning_sessions` table)
-- PM strategy: PM tasks linked to the failure modes they address, frequency by criticality, deferral rules, critical spares per class
 - Troubleshooting record: operator actions, findings and proven cause, coded against the class failure modes
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope

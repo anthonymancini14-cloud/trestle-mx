@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Boxes, ClipboardList, Factory, LayoutDashboard, Library, PlusSquare, Sparkles } from "lucide-react";
+import { Boxes, CalendarCheck, ClipboardList, Factory, LayoutDashboard, Library, PlusSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/planning", label: "Planning", icon: Sparkles },
   { href: "/work-orders", label: "Work orders", icon: ClipboardList },
+  { href: "/pm", label: "PM program", icon: CalendarCheck },
   { href: "/assets", label: "Assets", icon: Factory },
   { href: "/asset-classes", label: "Class library", icon: Library },
   { href: "/inventory", label: "Storeroom", icon: Boxes },

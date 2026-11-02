@@ -379,6 +379,7 @@ export const DC_WO_DEFS: WoDef[] = [
   },
   {
     num: 2002,
+    pm: "UPS-STATIC-PM01",
     title: "UPS-A1 annual preventive maintenance (OEM)",
     description: "Annual OEM preventive maintenance on UPS module A1 under MOP; A side at N for the duration.",
     floc: "CFD-ELA-UPS-A1", type: "preventive", priority: 3, stage: "closure", status: "closed",
@@ -399,6 +400,7 @@ export const DC_WO_DEFS: WoDef[] = [
   // ---------------- Closure ----------------
   {
     num: 2004,
+    pm: "CHILLER-PM04",
     title: "Chiller CH-02 condenser tube cleaning",
     description: "Approach temperature on CH-02 condenser rising; scheduled tube brushing with the chiller off line and CH-01 carrying load.",
     floc: "CFD-CUP-CH-02", type: "preventive", priority: 3, stage: "closure",
@@ -424,6 +426,7 @@ export const DC_WO_DEFS: WoDef[] = [
   // ---------------- Scheduling ----------------
   {
     num: 2006,
+    pm: "BATT-STRING-PM01",
     title: "Battery string B1 quarterly inspection and ohmic test",
     description: "Quarterly inspection of battery string B1: module voltages, internal resistance trend, connections and BMS alarms.",
     floc: "CFD-ELB-BAT-B1", type: "preventive", priority: 3, stage: "scheduling",

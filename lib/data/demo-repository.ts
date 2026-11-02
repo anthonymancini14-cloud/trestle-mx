@@ -1,11 +1,13 @@
 import "server-only";
 import { buildDataset, DEFAULT_DEMO_SITE_ID, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
+import { dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
 import type { NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
   InventoryItem,
+  PmScheduleRow,
   Site,
   WoEvent,
   WoStage,
@@ -135,6 +137,8 @@ export class DemoRepository implements Repository {
       .map((c) => ({
         ...c,
         failure_modes: db.failureModes.filter((m) => m.class_id === c.id).sort((a, b) => a.code.localeCompare(b.code)),
+        pm_tasks: db.pmTasks.filter((pt) => pt.class_id === c.id).sort((a, b) => a.code.localeCompare(b.code)),
+        spares: db.classSpares.filter((s) => s.class_id === c.id),
       }))
       .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
   }
@@ -202,6 +206,7 @@ export class DemoRepository implements Repository {
       actual_hours: null,
       plan_summary: null,
       debrief: null,
+      pm_schedule_id: null,
       created_at: nowIso(),
       updated_at: nowIso(),
       closed_at: null,
@@ -323,5 +328,86 @@ export class DemoRepository implements Repository {
     wo.closed_at = nowIso();
     wo.updated_at = nowIso();
     logEvent(db, { wo_id: woId, event_type: "closed", from_stage: "closure", to_stage: null, note: debrief, actor_id: actorId });
+    // A completed PM restarts its interval from today.
+    const schedule = wo.pm_schedule_id ? db.pmSchedules.find((s) => s.id === wo.pm_schedule_id) : undefined;
+    if (schedule) {
+      schedule.last_done_on = wo.closed_at.slice(0, 10);
+      schedule.next_due_on = nextDueAfter(schedule.last_done_on, schedule.interval_days);
+    }
+  }
+
+  async listPmSchedules(filter: { assetId?: string } = {}): Promise<PmScheduleRow[]> {
+    const db = store();
+    return db.pmSchedules
+      .filter((s) => s.site_id === this.siteId && (!filter.assetId || s.asset_id === filter.assetId))
+      .map((s) => {
+        const asset = db.assets.find((a) => a.id === s.asset_id)!;
+        const open = db.workOrders.find((w) => w.pm_schedule_id === s.id && w.status === "open");
+        return {
+          ...s,
+          asset: { id: asset.id, floc: asset.floc, name: asset.name, criticality: asset.criticality },
+          task: db.pmTasks.find((t) => t.id === s.pm_task_id)!,
+          open_wo: open ? { id: open.id, wo_number: open.wo_number, stage: open.stage } : null,
+          deferrals: db.pmDeferrals
+            .filter((d) => d.schedule_id === s.id)
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .map((d) => ({ ...d, approver_name: db.profiles.find((p) => p.id === d.approved_by)?.full_name ?? null })),
+        };
+      })
+      .sort((a, b) => a.next_due_on.localeCompare(b.next_due_on) || a.asset.floc.localeCompare(b.asset.floc));
+  }
+
+  async generateDuePms(asOf: string, actorId: string): Promise<number> {
+    const db = store();
+    let created = 0;
+    for (const row of await this.listPmSchedules()) {
+      if (!row.is_active || row.open_wo) continue;
+      const state = dueState(row.next_due_on, asOf, PM_LEAD_DAYS);
+      if (state !== "overdue" && state !== "due") continue;
+      const plan = pmWorkPlan(row.task, row.asset.floc);
+      const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+      const id = newId();
+      db.workOrders.push({
+        id,
+        site_id: this.siteId,
+        wo_number: `WO-26-${next}`,
+        title: `PM ${row.task.code}: ${row.task.title}`,
+        description: `Preventive maintenance from the PM program, due ${row.next_due_on}. Addresses failure modes ${row.task.failure_mode_codes.join(", ")}.`,
+        asset_id: row.asset_id,
+        wo_type: "preventive",
+        // Routine PMs are P3; an overdue PM on a crit A asset is P2.
+        priority: row.asset.criticality === "A" && state === "overdue" ? 2 : 3,
+        stage: "scheduling",
+        status: "open",
+        requires_shutdown: plan.requires_shutdown,
+        reported_by: actorId,
+        planner_id: actorId,
+        assigned_to: null,
+        scheduled_date: null,
+        estimated_hours: plan.tasks.reduce((s, t) => s + t.est_hours * t.crew_size, 0),
+        actual_hours: null,
+        plan_summary: plan.summary,
+        debrief: null,
+        pm_schedule_id: row.id,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        closed_at: null,
+      });
+      for (const step of plan.tasks) db.tasks.push({ ...step, id: newId(), wo_id: id, is_complete: false });
+      logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: "scheduling", note: `Generated from PM schedule; due ${row.next_due_on}`, actor_id: actorId });
+      created += 1;
+    }
+    return created;
+  }
+
+  async deferPm(scheduleId: string, toDate: string, reason: string, actorId: string) {
+    const db = store();
+    const schedule = db.pmSchedules.find((s) => s.id === scheduleId && s.site_id === this.siteId);
+    if (!schedule) throw new Error("PM schedule not found");
+    if (toDate <= schedule.next_due_on) throw new Error("The new date must be after the current due date");
+    db.pmDeferrals.push({ id: newId(), schedule_id: scheduleId, from_due_on: schedule.next_due_on, to_due_on: toDate, reason, approved_by: actorId, created_at: nowIso() });
+    const open = db.workOrders.find((w) => w.pm_schedule_id === scheduleId && w.status === "open");
+    if (open) logEvent(db, { wo_id: open.id, event_type: "note", from_stage: null, to_stage: null, note: `PM deferred from ${schedule.next_due_on} to ${toDate}: ${reason}`, actor_id: actorId });
+    schedule.next_due_on = toDate;
   }
 }

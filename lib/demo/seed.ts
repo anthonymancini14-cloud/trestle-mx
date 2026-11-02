@@ -273,6 +273,8 @@ export interface WoDef {
   reportedBy: string;
   assignedTo?: string;
   createdDaysAgo: number;
+  /** PM task code (e.g. "PUMP-CENT-PM02") when this work order comes from the asset's PM schedule. */
+  pm?: string;
   /** Closed work only: days from opened to closed. Defaults by priority in dataset.ts. */
   closedAfterDays?: number;
   scheduledInDays?: number;
@@ -311,6 +313,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1012,
+    pm: "PUMP-CENT-PM02",
     title: "P-201B oil change and vibration route",
     description: "Quarterly lube oil change and route-based vibration collection on high-service pump B.",
     floc: "BRP-HSP-P-201B", type: "preventive", priority: 3, stage: "closure", status: "closed",
@@ -390,6 +393,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1025,
+    pm: "COMP-SCREW-PM01",
     title: "Air compressor 4000-hour service",
     description: "Scheduled 4,000-hour service: separator, oil filter, intake filter, fluid change.",
     floc: "BRP-AIR-C-801", type: "preventive", priority: 3, stage: "execution",
@@ -424,6 +428,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1029,
+    pm: "BLOWER-PD-PM01",
     title: "Air scour blower belt and filter service",
     description: "Semiannual PM: belts, inlet filter, oil level.",
     floc: "BRP-FIL-BL-302", type: "preventive", priority: 4, stage: "scheduling",
@@ -439,6 +444,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1030,
+    pm: "ANALYZER-PM02",
     title: "Chlorine residual analyzer membrane service",
     description: "Quarterly membrane cap and electrolyte replacement with post-service calibration.",
     floc: "BRP-CHM-AN-403", type: "preventive", priority: 2, stage: "scheduling",
@@ -476,6 +482,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1036,
+    pm: "GEN-DIESEL-PM02",
     title: "Standby generator annual load bank test",
     description: "Annual 2-hour load bank test plus annual service items.",
     floc: "BRP-ELE-GEN-703", type: "preventive", priority: 3, stage: "planning",

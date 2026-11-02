@@ -65,3 +65,17 @@ export function assertCan(action: WoAction, role: Role, wo: Pick<WorkOrder, "sta
     );
   }
 }
+
+// ---------------------------------------------------------------- PM program
+
+/** PM program actions, outside the work order lifecycle. */
+export const PM_RULES = {
+  /** Create work orders for due PMs. */
+  generate: ["planner", "admin"],
+  /** Move a PM's due date. Every deferral needs a supervisor (decision TMX-013). */
+  defer: ["supervisor"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export function canPm(action: keyof typeof PM_RULES, role: Role): boolean {
+  return (PM_RULES[action] as readonly Role[]).includes(role);
+}

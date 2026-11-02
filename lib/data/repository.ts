@@ -6,6 +6,7 @@ import type {
   AssetDetail,
   InventoryItem,
   Organization,
+  PmScheduleRow,
   Priority,
   Profile,
   Site,
@@ -55,6 +56,13 @@ export interface Repository {
   listAssetClasses(): Promise<AssetClassWithModes[]>;
 
   listInventory(): Promise<InventoryItem[]>;
+
+  /** The site's PM program: every PM task scheduled on every asset, with its open work order and deferrals. */
+  listPmSchedules(filter?: { assetId?: string }): Promise<PmScheduleRow[]>;
+  /** Create work orders for PMs due within the lead window (straight to Scheduling). Returns how many were created. */
+  generateDuePms(asOf: string, actorId: string): Promise<number>;
+  /** Move a PM's due date with a reason. Supervisors only (checked in the server action and, live, in the database). */
+  deferPm(scheduleId: string, toDate: string, reason: string, actorId: string): Promise<void>;
 
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;
   moveStage(woId: string, to: WoStage, actorId: string, note?: string): Promise<void>;
