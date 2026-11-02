@@ -6,7 +6,7 @@ Most CMMS products treat the work order as a form. Trestle.MX treats it as a pro
 
 ![Planning Mode: the assistant revises the job plan after the planner asks about a weeping seal](docs/screenshots/planning-mode.png)
 
-> The demo runs on two fictional sites of one fictional operator, Northfork Infrastructure: **Cedar Flats Data Center** (the default) and **Basalt Ridge Plant**, a water and utility plant. Every person, asset and record is invented.
+> The demo runs on two fictional sites: **Cedar Flats Data Center** (the default) and **Basalt Ridge Plant**, a water and utility plant. Every person, asset and record is invented.
 
 ---
 

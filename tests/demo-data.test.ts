@@ -129,7 +129,7 @@ describe("demo Planning Mode scripts", () => {
 
 describe("fictional data hygiene", () => {
   // The demo plant is invented. Guard against real employer or site names creeping in.
-  const banned = [/georgia[-\s]?pacific/i, /\bwauna\b/i, /\bGP\b/, /\bkraft\b/i, /\bpulp\b/i, /\bTAPPI\b/, /BLRBAC/i];
+  const banned = [/northfork/i, /georgia[-\s]?pacific/i, /\bwauna\b/i, /\bGP\b/, /\bkraft\b/i, /\bpulp\b/i, /\bTAPPI\b/, /BLRBAC/i];
   const roots = ["app", "components", "lib", "types", "supabase", "scripts", "README.md"];
 
   function files(p: string): string[] {
