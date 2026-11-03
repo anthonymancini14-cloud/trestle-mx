@@ -1,4 +1,5 @@
 import { seedId } from "./ids";
+import { buildDocuments, type DocumentRows } from "./documents-build";
 import {
   AREAS,
   ASSETS,
@@ -23,11 +24,19 @@ import {
   DC_SITE,
   DC_WO_DEFS,
 } from "./seed-datacenter";
-import { addDays, applicableTasks, effectiveInterval, nextDueAfter, PM_LEAD_DAYS } from "@/lib/pm/program";
+import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
+import { todayAt } from "@/lib/utils";
+import { addDays, applicableTasks, daysBetween, effectiveInterval, nextDueAfter, PM_LEAD_DAYS } from "@/lib/pm/program";
+import { FAILURE_CODES } from "@/lib/taxonomy/failure-codes";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import { CLASS_PM, pmTaskCode } from "@/lib/taxonomy/pm-library";
 import { WO_STAGES } from "@/types/domain";
 import type {
+  Addendum,
+  FailureCode,
+  Finding,
+  OperatorAction,
+  Resolution,
   AreaCode,
   Asset,
   AssetClass,
@@ -56,7 +65,7 @@ export interface SiteAccess {
   site_id: string;
 }
 
-export interface Dataset {
+export interface Dataset extends DocumentRows {
   org: Organization;
   sites: Site[];
   areas: AreaCode[];
@@ -70,6 +79,11 @@ export interface Dataset {
   pmDeferrals: PmDeferral[];
   crewShifts: CrewShift[];
   timeOff: TimeOff[];
+  failureCodes: FailureCode[];
+  operatorActions: OperatorAction[];
+  findings: Finding[];
+  resolutions: Resolution[];
+  addenda: Addendum[];
   assets: Asset[];
   cableRoutes: CableRouteSegment[];
   parts: Part[];
@@ -225,13 +239,16 @@ const SEED_SHIFTS: [string, number, number[]][] = [
   ["Mateo", 10, [0, 4, 5, 6]],
   ["Kai", 10, [2, 3, 4, 5]],
   ["Rafael", 8, [1, 2, 3, 4, 5]],
+  ["Nate", 8, [1, 2, 3, 4, 5]],
+  ["Priya", 10, [1, 2, 3, 4]],
+  ["Luis", 10, [1, 2, 3, 4]],
 ];
 
 /** Time off: [first name, starts in days, ends in days, hours per day (null = whole shift), reason]. */
 const SEED_TIME_OFF: [string, number, number, number | null, string][] = [
   ["Jordan", 2, 3, null, "Vacation"],
   ["Kai", 1, 1, 4, "NFPA 70E refresher"],
-  ["Alex", 8, 12, null, "Vacation"],
+  ["Alex", 15, 19, null, "Vacation"],
   ["Tasha", 9, 9, 5, "Vendor UPS training"],
 ];
 
@@ -242,6 +259,139 @@ function onShiftDay(firstName: string | undefined, date: string): string {
   let d = date;
   while (!days.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) d = addDays(d, 1);
   return d;
+}
+
+/**
+ * Give every seeded work order its JCN and WCE number. A JCN takes the date its
+ * -001 was written up (in the site's time zone) and the next job ID from the
+ * site's block that day. Other shops' WCEs share the JCN, numbered in the order
+ * they were written up. Deferred WCEs point at the JCN that carries the work.
+ */
+function assignJcns(workOrders: WorkOrder[], seedRows: { id: string; def: WoDef; site: Site }[], events: WoEvent[]): void {
+  const byId = new Map(workOrders.map((w) => [w.id, w]));
+  const rowOf = (num: number) => {
+    const r = seedRows.find((x) => x.def.num === num);
+    if (!r) throw new Error(`Unknown seed work order ${num}`);
+    return r;
+  };
+  const used = new Map<string, string[]>();
+  const primaries = seedRows.filter((r) => !r.def.wceOf).sort((a, b) => byId.get(a.id)!.created_at.localeCompare(byId.get(b.id)!.created_at));
+  for (const r of primaries) {
+    const wo = byId.get(r.id)!;
+    const taken = used.get(r.site.id) ?? [];
+    wo.jcn = nextJcn(taken, todayAt(r.site.timezone, new Date(wo.created_at)), r.site.jcn_block);
+    wo.wce_seq = 1;
+    used.set(r.site.id, [...taken, wo.jcn]);
+  }
+  const others = seedRows.filter((r) => r.def.wceOf).sort((a, b) => byId.get(a.id)!.created_at.localeCompare(byId.get(b.id)!.created_at));
+  for (const r of others) {
+    const wo = byId.get(r.id)!;
+    const primary = byId.get(rowOf(r.def.wceOf!).id)!;
+    wo.jcn = primary.jcn;
+    wo.wce_seq = nextWceSeq(workOrders.filter((w) => w.jcn === primary.jcn).map((w) => w.wce_seq));
+  }
+  for (const w of workOrders) w.wo_number = wceNumber(w.jcn, w.wce_seq);
+  for (const r of seedRows.filter((x) => x.def.deferredTo)) {
+    const wo = byId.get(r.id)!;
+    const target = byId.get(rowOf(r.def.deferredTo!).id)!;
+    wo.deferred_to_jcn = target.jcn;
+    wo.debrief = deferralNote(target.jcn, r.def.deferReason ?? "");
+    const closedEvent = events.find((e) => e.wo_id === wo.id && e.event_type === "closed");
+    if (closedEvent) closedEvent.note = wo.debrief;
+    target.deferred_from_wo_id = wo.id;
+  }
+}
+
+/** Seeded troubleshooting records: operator actions, findings, resolutions and addenda. */
+function buildTroubleshooting(workOrders: WorkOrder[], seedRows: { id: string; def: WoDef }[], now: Date) {
+  const operatorActions: OperatorAction[] = [];
+  const findings: Finding[] = [];
+  const resolutions: Resolution[] = [];
+  const addenda: Addendum[] = [];
+  const nowIso = now.toISOString();
+  // Never in the future.
+  const hoursAfter = (iso: string, h: number) => {
+    const t = new Date(Date.parse(iso) + h * 3_600_000).toISOString();
+    return t > nowIso ? nowIso : t;
+  };
+  for (const { id, def } of seedRows) {
+    const t = def.trouble;
+    if (!t) continue;
+    const wo = workOrders.find((w) => w.id === id)!;
+    // The work starts on the scheduled day (07:00 UTC), or at the write-up for work never scheduled.
+    const workStart = wo.scheduled_date && `${wo.scheduled_date}T07:00:00.000Z` > wo.created_at ? `${wo.scheduled_date}T07:00:00.000Z` : wo.created_at;
+    for (const a of t.actions ?? []) {
+      operatorActions.push({
+        id: seedId("operatorAction", operatorActions.length + 1),
+        wo_id: id,
+        conditions: a.conditions,
+        action: a.action,
+        result: a.result,
+        ran_minutes: a.ranMinutes ?? null,
+        corrects_id: null,
+        created_by: personId(a.by),
+        // Operator actions before the write-up are entered with it.
+        created_at: hoursAfter(wo.created_at, Math.max(a.at, 0)),
+      });
+    }
+    const ids = (t.findings ?? []).map((f) => {
+      const fid = seedId("finding", findings.length + 1);
+      findings.push({
+        id: fid,
+        wo_id: id,
+        test: f.test,
+        value: f.value ?? null,
+        unit: f.unit ?? null,
+        spec: f.spec ?? null,
+        result: f.result,
+        note: f.note ?? null,
+        corrects_id: null,
+        created_by: personId(f.by),
+        created_at: hoursAfter(f.onReport ? wo.created_at : workStart, f.at),
+      });
+      return fid;
+    });
+    const r = t.resolution;
+    if (r) {
+      resolutions.push({
+        id: seedId("resolution", resolutions.length + 1),
+        wo_id: id,
+        failure_mode: r.mode ?? null,
+        mechanism: r.mechanism ?? null,
+        cause: r.cause ?? null,
+        no_fault_found: r.nff ?? false,
+        cause_narrative: r.why,
+        remedy: r.remedy,
+        verification: r.verification ?? null,
+        verification_passed: r.verified ?? null,
+        operator_review: r.review,
+        operator_review_note: r.reviewNote ?? null,
+        finding_ids: r.supportedBy.map((i) => ids[i]),
+        supersedes_id: null,
+        created_by: personId(r.by),
+        // Never after the close.
+        created_at: wo.closed_at && hoursAfter(workStart, r.at) > wo.closed_at ? wo.closed_at : hoursAfter(workStart, r.at),
+      });
+    }
+    for (const a of t.addenda ?? []) {
+      addenda.push({ id: seedId("addendum", addenda.length + 1), wo_id: id, body: a.body, created_by: personId(a.by), created_at: hoursAfter(wo.closed_at!, a.daysAfterClose * 24) });
+    }
+  }
+  return { operatorActions, findings, resolutions, addenda };
+}
+
+/** The current WCE number of each seeded work order, by seed key (for demo plans that cite history). */
+export function seedNumbers(db: Pick<Dataset, "workOrders">): Map<number, string> {
+  const out = new Map<number, string>();
+  let woN = 0;
+  for (const { woDefs } of [...SITE_SEEDS].reverse()) {
+    for (const def of woDefs) {
+      const id = seedId("wo", ++woN);
+      const wo = db.workOrders.find((w) => w.id === id);
+      if (wo) out.set(def.num, wo.wo_number);
+    }
+  }
+  return out;
 }
 
 /** Expand the seed definitions into normalized rows with real timestamps. */
@@ -282,9 +432,11 @@ export function buildDataset(now: Date = new Date()): Dataset {
   };
 
   let woN = 0;
+  const seedRows: { id: string; def: WoDef; site: Site }[] = [];
   for (const { site, woDefs, crew } of [...SITE_SEEDS].reverse()) {
     for (const def of woDefs) {
       const id = seedId("wo", ++woN);
+      seedRows.push({ id, def, site });
       const status = def.status ?? "open";
       const stageIndex = WO_STAGES.indexOf(def.stage);
       const createdAt = at(def.createdDaysAgo);
@@ -354,7 +506,12 @@ export function buildDataset(now: Date = new Date()): Dataset {
       workOrders.push({
         id,
         site_id: site.id,
-        wo_number: `WO-26-${def.num}`,
+        // Numbered after every row exists: see the JCN pass below.
+        wo_number: "",
+        jcn: "",
+        wce_seq: 0,
+        deferred_to_jcn: null,
+        deferred_from_wo_id: null,
         title: def.title,
         description: def.description,
         asset_id: def.floc ? assetId(def.floc) : null,
@@ -387,6 +544,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
           id: seedId("task", ++taskN),
           wo_id: id,
           seq: (i + 1) * 10,
+          day: t.day ?? 1,
           description: t.desc,
           craft: t.craft,
           crew_size: t.crew ?? 1,
@@ -408,6 +566,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
           qty_required: p.qty,
           qty_used: p.used ?? 0,
           status,
+          expected_on: status === "planned" && p.etaInDays !== undefined ? dateIn(p.etaInDays) : null,
         });
         // Open reservations hold stock until the part is issued.
         if (pid && (status === "reserved" || status === "kitted")) {
@@ -417,6 +576,40 @@ export function buildDataset(now: Date = new Date()): Dataset {
       });
     }
   }
+
+  // Lead work (a scaffold) lands on its crew's last work day before the job it supports.
+  for (const r of seedRows.filter((x) => x.def.startsBefore)) {
+    const wo = workOrders.find((w) => w.id === r.id)!;
+    const target = workOrders.find((w) => w.id === seedRows.find((x) => x.def.num === r.def.startsBefore)!.id)!;
+    const days = SEED_SHIFTS.find(([name]) => name === r.def.assignedTo)?.[2] ?? [0, 1, 2, 3, 4, 5, 6];
+    let d = addDays(target.scheduled_date!, -1);
+    while (!days.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) d = addDays(d, -1);
+    wo.scheduled_date = d;
+    // Its last step (strike the scaffold) falls on the crew's first work day after the main job's last day.
+    const own = tasks.filter((t) => t.wo_id === wo.id);
+    const last = own.at(-1);
+    if (last && last.day > 1) {
+      const mainDays = Math.max(1, ...tasks.filter((t) => t.wo_id === target.id).map((t) => t.day));
+      let strike = addDays(target.scheduled_date!, mainDays);
+      while (!days.includes(new Date(`${strike}T00:00:00Z`).getUTCDay())) strike = addDays(strike, 1);
+      last.day = daysBetween(d, strike) + 1;
+    }
+  }
+  for (const r of seedRows.filter((x) => x.def.startsWith)) {
+    const wo = workOrders.find((w) => w.id === r.id)!;
+    const target = workOrders.find((w) => w.id === seedRows.find((x) => x.def.num === r.def.startsWith)!.id)!;
+    wo.scheduled_date = onShiftDay(r.def.assignedTo, target.scheduled_date!);
+  }
+  assignJcns(workOrders, seedRows, events);
+  const record = buildTroubleshooting(workOrders, seedRows, now);
+  const documents = buildDocuments({
+    now,
+    sites: DEMO_SITES,
+    assets: ALL_ASSETS,
+    profiles: ALL_PROFILES,
+    workOrders,
+    woIdByNum: new Map(seedRows.map((r) => [r.def.num, r.id])),
+  });
 
   // PM schedule dates: from linked work orders where there are any, otherwise a
   // stable spread across each interval, with a few overdue for realism.
@@ -437,7 +630,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
     } else {
       const h = hash(`${asset.floc}|${task.code}`);
       const overdue = h % 29 === 0;
-      const ago = overdue ? interval + 3 + (h % 18) : Math.floor((interval * (h % 1000)) / 1000);
+      // At least a day ago, so nothing reads as done tomorrow in any site's time zone.
+      const ago = overdue ? interval + 3 + (h % 18) : Math.max(1, Math.floor((interval * (h % 1000)) / 1000));
       lastDone = addDays(today, -ago);
       nextDue = nextDueAfter(lastDone, interval);
       // Nothing is done before the asset exists: commissioning is the baseline.
@@ -496,6 +690,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
     pmDeferrals,
     crewShifts,
     timeOff,
+    failureCodes: FAILURE_CODES.map((c, i) => ({ id: seedId("failureCode", i + 1), org_id: ORG.id, class_id: null, ...c })),
+    ...record,
     assets: ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
     cableRoutes: buildCableRoutes(),
     parts: ALL_PARTS,
@@ -504,6 +700,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     tasks,
     woParts,
     events,
+    ...documents,
   };
 }
 

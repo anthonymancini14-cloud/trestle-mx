@@ -1,9 +1,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildDataset } from "@/lib/demo/dataset";
+import { buildDataset, seedNumbers } from "@/lib/demo/dataset";
 import { computeMetrics } from "@/lib/metrics";
-import { DEMO_SCRIPTS } from "@/lib/planning/demo-plans";
+import { DEMO_SCRIPTS, resolveDemoScript } from "@/lib/planning/demo-plans";
 import { jobPlanSchema } from "@/lib/planning/plan-schema";
 
 const db = buildDataset(new Date("2026-10-16T12:00:00Z"));
@@ -112,10 +112,16 @@ describe("demo timeline realism", () => {
 describe("demo Planning Mode scripts", () => {
   const catalog = new Set(db.parts.map((p) => p.part_number));
 
-  for (const [woNumber, script] of Object.entries(DEMO_SCRIPTS)) {
-    it(`${woNumber}: plans are valid and only cite real catalog parts`, () => {
-      const wo = db.workOrders.find((w) => w.wo_number === woNumber);
+  const numbers = seedNumbers(db);
+  for (const [seed, raw] of Object.entries(DEMO_SCRIPTS)) {
+    it(`seed ${seed}: plans are valid, only cite real catalog parts and real work orders`, () => {
+      const wo = db.workOrders.find((w) => w.wo_number === numbers.get(Number(seed)));
       expect(wo?.stage).toBe("planning");
+      // Every {{WO:n}} token resolves to a seeded work order.
+      const cited = [...JSON.stringify(raw).matchAll(/\{\{WO:(\d+)\}\}/g)].map((m) => Number(m[1]));
+      for (const n of cited) expect(numbers.has(n), `token WO:${n}`).toBe(true);
+      const script = resolveDemoScript(raw, (n) => numbers.get(n));
+      expect(JSON.stringify(script)).not.toContain("{{WO:");
       const plans = [script.plan, ...script.turns.flatMap((t) => (t.revise ? [t.revise(script.plan)] : []))];
       for (const plan of plans) {
         expect(jobPlanSchema.safeParse(plan).success).toBe(true);

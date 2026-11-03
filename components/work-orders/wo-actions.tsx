@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,7 @@ import { Input, Label, Panel, PanelHeader, Select, Textarea } from "@/components
 import {
   authorizeWorkOrder,
   closeWorkOrder,
+  deferWorkOrder,
   rejectWorkOrder,
   scheduleWorkOrder,
   submitCompletion,
@@ -24,13 +26,24 @@ export function WoActions({
   technicians,
   estimatedHours,
   openTasks,
+  isPrimary,
+  closeBlocker,
+  canDefer,
 }: {
   woId: string;
   actions: WoAction[];
   technicians: Profile[];
   estimatedHours: number | null;
   openTasks: number;
+  /** WCE -001: its close-out is the corrective action summary for the JCN. */
+  isPrimary: boolean;
+  /** Why -001 can't close yet (other WCEs open). */
+  closeBlocker: string | null;
+  canDefer: boolean;
 }) {
+  const router = useRouter();
+  const [deferring, setDeferring] = useState(false);
+  const [deferReason, setDeferReason] = useState("");
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
@@ -47,7 +60,7 @@ export function WoActions({
     });
 
   const visible = actions.filter((a) => a !== "complete_task" && a !== "issue_part");
-  if (visible.length === 0) {
+  if (visible.length === 0 && !canDefer) {
     return (
       <Panel>
         <PanelHeader title="Next step" />
@@ -80,7 +93,7 @@ export function WoActions({
             <Label htmlFor="reject-note" className="pt-2">
               Or reject with a reason
             </Label>
-            <Textarea id="reject-note" rows={2} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="Duplicate of WO-…, or not a maintenance issue" />
+            <Textarea id="reject-note" rows={2} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="Duplicate of JCN …, or not a maintenance issue" />
             <Button variant="danger" size="sm" disabled={pending} onClick={() => run(() => rejectWorkOrder(woId, rejectNote))}>
               Reject
             </Button>
@@ -138,19 +151,68 @@ export function WoActions({
               <Input id="close-hours" type="number" min={0} step={0.5} value={hours} onChange={(e) => setHours(e.target.value)} />
             </div>
             <div>
-              <Label htmlFor="close-debrief">After-action debrief</Label>
+              <Label htmlFor="close-debrief">{isPrimary ? "Corrective action summary" : "After-action debrief"}</Label>
               <Textarea
                 id="close-debrief"
                 rows={4}
                 value={debrief}
                 onChange={(e) => setDebrief(e.target.value)}
-                placeholder="What was found, what differed from the plan, what the next planner should know."
+                placeholder={
+                  isPrimary
+                    ? "The corrective action taken to remedy the discrepancy, across every shop's WCE; what was found; what the next planner should know."
+                    : "What this shop found and did, what differed from the plan."
+                }
               />
               <p className="mt-1 text-[11px] text-tx-3">Planning Mode reads this the next time this equipment comes up.</p>
             </div>
-            <Button variant="primary" className="w-full" disabled={pending} onClick={() => run(() => closeWorkOrder(woId, Number(hours), debrief))}>
-              Close work order
+            {closeBlocker && <p className="rounded-[3px] border border-warn/40 bg-warn/10 px-2.5 py-2 text-xs text-warn">{closeBlocker}</p>}
+            <Button variant="primary" className="w-full" disabled={pending || !!closeBlocker} onClick={() => run(() => closeWorkOrder(woId, Number(hours), debrief))}>
+              {isPrimary ? "Close WCE -001 and the JCN" : "Close this WCE"}
             </Button>
+          </div>
+        )}
+
+        {canDefer && (
+          <div className="space-y-2 border-t border-line pt-3">
+            {!deferring ? (
+              <button type="button" className="text-xs text-brass hover:text-brass-bright" onClick={() => setDeferring(true)}>
+                Can&apos;t close this out? Defer it to a new JCN
+              </button>
+            ) : (
+              <>
+                <Label htmlFor="defer-reason">Why it&apos;s deferred</Label>
+                <Textarea
+                  id="defer-reason"
+                  rows={3}
+                  value={deferReason}
+                  onChange={(e) => setDeferReason(e.target.value)}
+                  placeholder="e.g. Part on 6-week lead time. Known issue; doesn't affect safety, crew or function."
+                />
+                <p className="text-[11px] text-tx-3">
+                  The work is written up under a new JCN (starting in Vetting), and this WCE is signed off &ldquo;Corrective action deferred, see JCN …&rdquo;.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    disabled={pending || (isPrimary && !!closeBlocker)}
+                    onClick={() =>
+                      startTransition(async () => {
+                        setError(null);
+                        const r = await deferWorkOrder(woId, deferReason);
+                        if (!r.ok) setError(r.error);
+                        else if (r.newId) router.push(`/work-orders/${r.newId}`);
+                      })
+                    }
+                  >
+                    Defer to a new JCN
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDeferring(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         )}
 

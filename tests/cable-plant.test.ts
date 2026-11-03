@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { liveNum } from "./seed-numbers";
 import { loadStaticContext } from "@/lib/anthropic/context/loader";
 import { buildSiteContext, formatSiteContext } from "@/lib/anthropic/context/site-context";
 import { indexOptions, searchAssets } from "@/lib/assets/search";
@@ -99,8 +100,8 @@ describe("site scoping in the demo store", () => {
 
   it("commits the cable plan against the data center storeroom", async () => {
     const repo = new DemoRepository(DC_SITE.id);
-    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === "WO-26-2007")!;
-    await repo.commitPlan(wo.id, DEMO_SCRIPTS["WO-26-2007"].plan, db.profiles.find((p) => p.full_name === "Owen Castillo")!.id);
+    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === liveNum(2007))!;
+    await repo.commitPlan(wo.id, DEMO_SCRIPTS[2007].plan, db.profiles.find((p) => p.full_name === "Owen Castillo")!.id);
     const after = await repo.getWorkOrder(wo.id);
     expect(after?.stage).toBe("scheduling");
     const trunk = after!.parts.find((p) => p.part?.part_number === "MX-FIB-MPO24-OS2-45M")!;
@@ -114,7 +115,7 @@ describe("Planning Mode for cable work", () => {
 
   it("gives Claude the cable's route, end points and replacement spec", async () => {
     const repo = new DemoRepository(DC_SITE.id);
-    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === "WO-26-2007")!;
+    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === liveNum(2007))!;
     const ctx = await buildSiteContext(repo, wo.id);
     expect(ctx!.vertical).toBe("data_center");
     const text = formatSiteContext(ctx!);
@@ -127,13 +128,13 @@ describe("Planning Mode for cable work", () => {
     expect(text).toContain("OD 4.5 mm");
     expect(text).toContain("polarity Type B");
     // The tray job whose debrief flagged this trunk is in the history.
-    expect(ctx!.history.map((h) => h.wo_number)).toContain("WO-26-2001");
+    expect(ctx!.history.map((h) => h.wo_number)).toContain(liveNum(2001));
     expect(text).toContain("left it as found");
   });
 
   it("lists the cables in a tray section for tray work", async () => {
     const repo = new DemoRepository(DC_SITE.id);
-    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === "WO-26-2010")!;
+    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === liveNum(2010))!;
     const text = formatSiteContext((await buildSiteContext(repo, wo.id))!);
     expect(text).toContain("## Cables routed through this tray section");
     expect(text).toContain("CFD-DH1-CBL-0103");

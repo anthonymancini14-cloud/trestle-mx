@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
 import { computeMetrics } from "@/lib/metrics";
-import { cn, formatHours } from "@/lib/utils";
+import { addDays } from "@/lib/pm/program";
+import { cn, formatHours, todayAt } from "@/lib/utils";
+import { DEFAULT_REPEAT_WINDOW_DAYS, repeatCheck, repeatFailures } from "@/lib/troubleshooting";
 import { ACTION_RULES, availableActions } from "@/lib/workflow";
 import { ROLE_LABELS, STAGE_LABELS, WO_STAGES } from "@/types/domain";
 
@@ -13,8 +15,25 @@ export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   const { profile, repo } = await getViewer();
-  const [workOrders, inventory, { site }] = await Promise.all([repo.listWorkOrders(), repo.listInventory(), repo.getSite()]);
+  const [workOrders, inventory, { site }, resolutions, assets, classes] = await Promise.all([
+    repo.listWorkOrders(),
+    repo.listInventory(),
+    repo.getSite(),
+    repo.listResolutions(),
+    repo.listAssets(),
+    repo.listAssetClasses(),
+  ]);
   const m = computeMetrics(workOrders, inventory);
+  // Repeat failures (TMX-008): same asset, same failure mode, within the class's window.
+  const windowFor = (assetId: string) => {
+    const cls = classes.find((c) => c.id === assets.find((a) => a.id === assetId)?.class_id);
+    return cls ? cls.repeat_window_days : DEFAULT_REPEAT_WINDOW_DAYS;
+  };
+  const yearAgo = addDays(todayAt(site.timezone), -365);
+  const repeats = repeatFailures(resolutions, windowFor).filter((r) => r.item.wo.created_at >= yearAgo);
+  const possibleRepeats = workOrders.filter(
+    (w) => w.status === "open" && w.wce_seq === 1 && repeatCheck(w, resolutions.filter((r) => r.wo.asset_id === w.asset_id), w.asset_id ? windowFor(w.asset_id) : null, null),
+  ).length;
 
   const mine = workOrders
     .map((w) => ({ wo: w, actions: availableActions(profile.role, w, { schedulerRoles: site.scheduler_roles }) }))
@@ -43,7 +62,7 @@ export default async function DashboardPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Kpi label="Open work orders" value={String(m.openCount)} note={m.emergencyOpen ? `${m.emergencyOpen} emergency` : "No emergencies"} tone={m.emergencyOpen ? "bad" : "neutral"} />
         <Kpi label="Ready backlog" value={formatHours(m.readyBacklogHours)} note="Planned, awaiting crew" />
         <Kpi label="Planning queue" value={String(m.stageCounts.planning)} note="Authorized, not yet planned" tone={m.stageCounts.planning > 3 ? "warn" : "neutral"} />
@@ -53,6 +72,12 @@ export default async function DashboardPage() {
           value={m.estimateRatio ? `${Math.round(m.estimateRatio * 100)}%` : "—"}
           note={`Actual vs planned, ${m.estimateSample} closed`}
           tone={m.estimateRatio && m.estimateRatio > 1.15 ? "warn" : "neutral"}
+        />
+        <Kpi
+          label="Repeat failures"
+          value={String(repeats.length)}
+          note={possibleRepeats ? `${possibleRepeats} open job${possibleRepeats === 1 ? "" : "s"} may be repeats` : "Same mode, same asset, 12 months"}
+          tone={repeats.length || possibleRepeats ? "warn" : "neutral"}
         />
       </div>
 
@@ -90,7 +115,7 @@ export default async function DashboardPage() {
               {mine.slice(0, 10).map(({ wo, actions }) => (
                 <li key={wo.id}>
                   <Link href={actions.includes("plan") ? `/planning/${wo.id}` : `/work-orders/${wo.id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-panel-2">
-                    <Mono className="w-24 shrink-0">{wo.wo_number}</Mono>
+                    <Mono className="w-28 shrink-0 whitespace-nowrap">{wo.wo_number}</Mono>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm">{wo.title}</div>
                       <div className="truncate font-mono text-[11px] text-tx-3">{wo.asset?.floc ?? "No asset"}</div>

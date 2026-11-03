@@ -103,6 +103,61 @@ Planning Mode sees the asset's PM schedule and folds PMs that fall due soon into
 
 ---
 
+## Troubleshooting record
+
+Most CMMS records say what was replaced, not why that fixed it. Each WCE keeps one record, written by the people closest to each part of the problem.
+
+| Part | Who | What it holds |
+|---|---|---|
+| **Operator actions** | Operator | What they saw (running state, alarms, readings), what they tried, what happened, how long it ran after |
+| **Findings** | Technician | One test, measurement or inspection per entry: the reading, the unit, the spec or baseline it was judged against, pass, fail or information, and what it rules in or out |
+| **Resolution** | Technician or supervisor | Failure mode (from the asset class), mechanism and cause (a controlled list after ISO 14224), the findings that prove the cause, the remedy, the test after the repair with its reading, and a review of the operator's first response: helped, masked the problem, or no effect |
+| **Addenda** | Supervisor, planner, admin, or the technician who worked it | Later information on a closed work order, signed and dated under the unchanged record |
+
+Rules:
+
+- **Evidence to close.** A corrective or emergency JCN's WCE -001 can't close without a cause backed by at least one linked finding, or an explicit "no fault found". A cause needs a remedy and a verification reading. A deferral closes without one.
+- **Insert-only.** Entries are never edited or deleted. A correction is a new entry that points at the one it corrects; a new resolution replaces the current one and the old one stays on record.
+- **Repeat failures.** When corrective work on the same asset closed within the class's repeat window (90 days by default, off for run-to-failure classes), a new discrepancy shows the prior cause and fix to the gatekeeper and planner. The same failure mode within the window counts as a confirmed repeat on the dashboard.
+- **Feeds the next plan.** Planning Mode reads the operator actions and findings so far, and the proven cause, fix, verification and operator review behind each past job on the equipment and its train.
+
+In the database, the resolution and its finding links are written by one `SECURITY DEFINER` function, the record tables have no update or delete policies, and a trigger refuses a close without evidence. Photos on findings are designed, not built.
+
+---
+
+## Document control
+
+Every asset carries its controlled documents: OEM manuals, drawings, technical specifications, procedures and management of change (MOC) records. The crew opens them from the work order, in the field, on a phone or tablet.
+
+| Rule | How it works |
+|---|---|
+| **Numbered and revised** | Each document gets a number from its site and type (`CFD-DWG-0001`). Revisions are lettered A, B, C. A revision is a file (PDF, drawing, image) or text written in Trestle (procedures, MOCs, data sheets). Its content never changes after it is written. |
+| **Two people** | Planners, supervisors and admins write revisions as drafts. A supervisor or admin who didn't write it approves or rejects it. On approval it becomes current and the revision before it is superseded: archived, still readable, marked "for reference only". |
+| **Obsolete, archived, replaced** | A supervisor or admin makes a document obsolete with a reason and, usually, the document that replaces it. It leaves the active register and can't go on new work. Pending drafts are rejected; every revision stays in the archive. |
+| **Available for the whole job** | Documents go on a WCE from the plan (Planning Mode cites them by number), by hand, or by being opened from it. While the work order is open each one shows the current revision, warns when a newer revision or an obsolete flag has appeared since it was opened, and logs who opened which revision in which stage. |
+| **Kept with the record** | When the WCE closes (or closes as deferred), each document is pinned to the revision the crew last opened, or the one current at close. Years later the closed work order still opens exactly that revision, with a note when a newer one is current. A document that was opened from the work order can't be taken off it. |
+
+Planning Mode reads the current revision of each document on the asset (the text of written procedures and specifications, and the number and title of files) and plans from the procedure's steps and the OEM's values, citing each document it relies on. The demo shows the P-201A bearing job keeping Rev B of the bearing procedure, which was later revised to Rev C with the soft foot check its debrief asked for.
+
+In the database, approving, rejecting and making obsolete run as `SECURITY DEFINER` functions that check role, site and the two-person rule. Triggers assign numbers and revision letters, freeze revision content, allow status to move only forward, refuse new revisions on obsolete documents, pin documents at close and refuse any later change. Files live in a private storage bucket, one folder per site, uploaded straight from the browser with a signed URL; uploaded SVGs are served sandboxed. Field markups by technicians, review dates on procedures, and documents shared across sites are designed, not built.
+
+---
+
+## Job control numbers and work center events
+
+Numbering follows the Air Force job control system Trestle.MX started from.
+
+| Piece | How it works |
+|---|---|
+| **JCN** | `263045000`: 26 = year, 304 = Julian day, 5000 = the site's job ID. Each site has a 4-digit block (Cedar Flats 5000, Basalt Ridge 1000); the job ID counts up from it each day and starts over the next Julian day |
+| **WCE** | Each shop's work on a discrepancy is a work center event: `263045000-001`, `-002` … numbered within the JCN. Every WCE runs the full six-stage lifecycle on its own |
+| **Close-out order** | WCE -001 belongs to the shop primarily responsible. It closes last, once every other WCE on the JCN is closed, and its close-out is the corrective action summary |
+| **Deferral** | A WCE that can't be closed (a known issue that doesn't affect safety, crew or function) is written up under its own new JCN, and the WCE is signed off "Corrective action deferred, see JCN …". Parts it held go back to stock |
+
+In the database a trigger numbers every new work order under a per-site lock, numbers never change, and a trigger refuses closing -001 while other WCEs are open. Existing work orders were numbered from the date they were written up.
+
+---
+
 ## Scheduling calendar
 
 One board for the scheduler: what is booked each day, what is coming, and whether the crew has the hours.
@@ -110,12 +165,14 @@ One board for the scheduler: what is booked each day, what is coming, and whethe
 | Piece | How it works |
 |---|---|
 | **Computed, not copied** | The calendar is built from the work orders and PM schedules on every render. A job pushed out, pulled forward, re-planned or deferred anywhere in the app shows in its new place; the board also refreshes every minute |
-| **What shows** | Scheduled jobs on their date with their stage; planned work waiting for a date on its due date; work not yet planned, and PMs coming due with no work order, faintly on their due or target date as forecast. Late work is drawn on today |
+| **What shows** | Scheduled WCEs on their dates with their stage; PM and PdM work on its due date (generated or not); planned corrective work on its earliest workable day. Corrective work still in vetting or planning is listed below the board with no date. Late work is drawn on today |
+| **Corrective work has no due date** | Once planned, it goes on the first day all its parts are on site and every craft it needs has the hours free, after booked work and PMs, highest priority first. Parts not on site carry an expected date (set from the catalog lead time when the plan is committed; the storeroom can change it). A job waiting on a part with no date is listed, not drawn |
+| **Multi-day work** | Each plan step has a day (1 = the scheduled date). A WCE shows on each of its days with that day's hours, and moving any day moves the whole WCE. Support work is its own WCE on the job's JCN: a contractor's scaffold goes up on its own day before the main WCE and comes down after |
 | **Capacity** | From the technician roster: each tech's craft, shift hours and work days, less time off. Each day shows booked and forecast crew-hours against available hours per craft, and who is away |
 | **Drag to schedule** | Drag a scheduled job to another day to move it (logged on the work order as a reschedule, with an optional reason). Drag a ready job from the backlog onto a day, pick the technician (sorted by craft, with their free hours), and it moves to Execution. Every card also has a Move or Schedule button for keyboard and touch |
 | **Who schedules** | A site setting. An admin picks the roles (supervisor by default; admin always can). The same setting decides who sees Schedule on a work order |
 
-Target date for unplanned corrective work is the report date plus a priority target (P1 1 day, P2 7, P3 30, P4 90); PM work uses the PM due date. A job books all its hours on its scheduled day; jobs that span several days, and shift patterns that rotate over more than a week, are designed, not built. In the database, scheduling and rescheduling run as `SECURITY DEFINER` functions that check the site's scheduler roles, and a trigger refuses a date or assignee change from anyone else.
+Drag works with a mouse, a pen or a finger (on touch screens, drag by the grip so the board still scrolls), and anyone who can't schedule sees why. Capacity and placement are tested with a roster of 400 technicians. Links between WCEs (scaffold must be up before the seal job starts) and shift patterns that rotate over more than a week are designed, not built. In the database, scheduling and rescheduling run as `SECURITY DEFINER` functions that check the site's scheduler roles, and a trigger refuses a date or assignee change from anyone else.
 
 ---
 
@@ -153,7 +210,7 @@ Each site has a vertical (industrial/utility or data center). The core is the sa
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
-Role and stage rules live in one pure module (`lib/workflow.ts`) used by both the UI (which buttons show) and the server actions (which mutations are allowed). Six roles: admin, supervisor, planner, gatekeeper, technician, storeroom.
+Role and stage rules live in one pure module (`lib/workflow.ts`) used by both the UI (which buttons show) and the server actions (which mutations are allowed). Seven roles: admin, supervisor, planner, gatekeeper, technician, storeroom, operator.
 
 ---
 
@@ -173,16 +230,16 @@ Role and stage rules live in one pure module (`lib/workflow.ts`) used by both th
 
 Everything goes through a `Repository` interface (`lib/data/repository.ts`) with two implementations:
 
-- **Demo** (`DemoRepository`): two in-memory fictional sites. No setup; the top bar switches site and lets a visitor act as anyone who works there. The demo store applies the same per-site scoping the database enforces.
+- **Demo** (`DemoRepository`): two in-memory fictional sites. No setup; the top bar switches site and lets a visitor act as anyone who works there. The demo store applies the same per-site scoping the database enforces. Seed dates are relative and the store rebuilds each day, so the demo always shows the current week.
 - **Live** (`SupabaseRepository`): multi-tenant Postgres. Every query runs under the signed-in user's JWT, so RLS scopes all data. Atomic multi-row writes go through Postgres functions.
 
 The app runs in live mode when Supabase environment variables are present, and in demo mode otherwise.
 
 ### Data model
 
-Twenty-one tables, created in dependency order by the migrations in `supabase/migrations/`:
+Thirty-two tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts` · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
 
 ### Multi-tenancy and security
 
@@ -240,6 +297,7 @@ app/
   (app)/schedule            scheduling calendar: booked and forecast work against crew capacity, drag to schedule
   (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
+  (app)/documents           document control: register, revisions, review, archive, file viewer
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
 lib/
@@ -253,7 +311,7 @@ lib/
   assets/                   asset search for pickers
   demo/                     fictional sites: data center and utility plant
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control
 ```
 
 ## Design decisions
@@ -268,12 +326,13 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 ## Roadmap
 
 - Planning session history saved per work order (`planning_sessions` table)
-- Troubleshooting record: operator actions, findings and proven cause, coded against the class failure modes
+- Photos on findings (storage), and repeat-failure trends by asset class in the fleet view
 - Fleet view: PM compliance, deferrals, backlog aging and repeat failures compared across sites
 - Data center: a colo site, redundancy model (N, N+1, 2N, A/B paths) that warns when a job drops redundancy, MOP fields in the plan, vendor and colo provider scope
 - Tray fill tracking from cable outer diameters against each section's design fill
-- Scheduling: multi-day jobs, rotating shift patterns, and suggesting a week's schedule from priority, due dates and crew hours
-- Retrieval over OEM manuals as a fourth context layer
+- Scheduling: links between WCEs (start after, finish before), rotating shift patterns, and suggesting a week's schedule for approval
+- Retrieval over uploaded OEM manual PDFs as a fourth context layer (written procedures and specs already reach Planning Mode)
+- Document control: technician field markups (redlines) that start a revision, periodic review dates, and org-wide documents shared across sites
 - Reliability metrics: repeat failures, MTBF by asset class, estimate accuracy by planner
 
 ---

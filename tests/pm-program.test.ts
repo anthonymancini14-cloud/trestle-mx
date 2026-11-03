@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { dbNum, liveNum } from "./seed-numbers";
 import { buildSiteContext, formatSiteContext } from "@/lib/anthropic/context/site-context";
 import { DemoRepository, resetDemoStore } from "@/lib/data/demo-repository";
 import { buildDataset, personId } from "@/lib/demo/dataset";
@@ -149,7 +150,7 @@ describe("demo maintenance index", () => {
       expect(w.wo_type).toBe("preventive");
     }
     // A closed PM sets last done and the next due date from its close date.
-    const ups = db.workOrders.find((w) => w.wo_number === "WO-26-2002")!;
+    const ups = db.workOrders.find((w) => w.wo_number === dbNum(db, 2002))!;
     const sched = db.pmSchedules.find((s) => s.id === ups.pm_schedule_id)!;
     expect(sched.last_done_on).toBe(ups.closed_at!.slice(0, 10));
     expect(sched.next_due_on).toBe(addDays(sched.last_done_on!, sched.interval_days));
@@ -206,7 +207,7 @@ describe("PM program in the demo store", () => {
 
   it("restarts the interval when a PM work order closes", async () => {
     const repo = new DemoRepository(SITE.id);
-    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === "WO-26-1025")!; // compressor 4000-hour service
+    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === liveNum(1025))!; // compressor 4000-hour service
     await repo.closeWorkOrder(wo.id, 3, "Service done; separator differential back to normal.", personId("Lena"));
     const sched = (await repo.listPmSchedules()).find((s) => s.id === wo.pm_schedule_id)!;
     const today = new Date().toISOString().slice(0, 10);
@@ -237,7 +238,7 @@ describe("PM program in the demo store", () => {
 
   it("gives Planning Mode the asset's PM schedule to bundle work", async () => {
     const repo = new DemoRepository(SITE.id);
-    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === "WO-26-1031")!;
+    const wo = (await repo.listWorkOrders()).find((w) => w.wo_number === liveNum(1031))!;
     const text = formatSiteContext((await buildSiteContext(repo, wo.id))!);
     expect(text).toContain("## PM schedule on this asset");
     expect(text).toContain("PUMP-CENT-PM04");

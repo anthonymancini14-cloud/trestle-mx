@@ -1,14 +1,26 @@
 import "server-only";
-import { buildDataset, DEFAULT_DEMO_SITE_ID, type Dataset } from "@/lib/demo/dataset";
+import { buildDataset, DEFAULT_DEMO_SITE_ID, seedNumbers, type Dataset } from "@/lib/demo/dataset";
 import type { JobPlan } from "@/lib/planning/plan-schema";
-import { dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
-import type { NewTimeOffInput, NewWorkOrderInput, Repository, WorkOrderFilter } from "./repository";
+import { addDays, dueState, nextDueAfter, PM_LEAD_DAYS, pmWorkPlan } from "@/lib/pm/program";
+import { todayAt } from "@/lib/utils";
+import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
+import { latestEta } from "@/lib/schedule/calendar";
+import { evidenceBlocker } from "@/lib/troubleshooting";
+import { citedDocuments, currentRevision, nextDocNumber, nextRev, revisionToPin } from "@/lib/documents";
+import type { NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
-  Craft,
+  ControlledDocument,
   CrewMember,
+  DocumentDetail,
+  DocumentListItem,
+  DocumentRevision,
+  RevisionFile,
+  WoDocumentRow,
+  ResolutionHistoryItem,
+  TroubleshootingRecord,
   InventoryItem,
   PmScheduleRow,
   Role,
@@ -25,15 +37,32 @@ import type {
  * survives hot reloads in development. On serverless hosting it resets when an
  * instance recycles, which is the intended behavior for a public demo.
  */
-const globalStore = globalThis as unknown as { __trestleDemo?: Dataset };
+const globalStore = globalThis as unknown as { __trestleDemo?: Dataset; __trestleDemoDay?: string };
+
+/**
+ * The demo's day. Seed dates are relative to when the store is built, so the
+ * store is rebuilt when the day turns over: a visitor a month from now sees
+ * this week's work, not last month's. (Changes made in the demo reset then too.)
+ */
+const demoDay = () => todayAt("America/Los_Angeles");
 
 function store(): Dataset {
-  globalStore.__trestleDemo ??= buildDataset();
+  const day = demoDay();
+  if (!globalStore.__trestleDemo || globalStore.__trestleDemoDay !== day) {
+    globalStore.__trestleDemo = buildDataset();
+    globalStore.__trestleDemoDay = day;
+  }
   return globalStore.__trestleDemo;
+}
+
+/** Today's WCE number of each seeded work order, by seed key (for scripted Planning Mode). */
+export function demoSeedNumbers(): Map<number, string> {
+  return seedNumbers(store());
 }
 
 export function resetDemoStore(): void {
   globalStore.__trestleDemo = buildDataset();
+  globalStore.__trestleDemoDay = demoDay();
 }
 
 const nowIso = () => new Date().toISOString();
@@ -56,9 +85,43 @@ function requireWo(db: Dataset, id: string, siteId: string): WorkOrder {
   return wo;
 }
 
+/** A new JCN for the site, today in the site's time zone, from the site's block. */
+function newJcn(db: Dataset, siteId: string): string {
+  const site = db.sites.find((x) => x.id === siteId)!;
+  return nextJcn(db.workOrders.filter((w) => w.site_id === siteId).map((w) => w.jcn), todayAt(site.timezone), site.jcn_block);
+}
+
 function logEvent(db: Dataset, event: Omit<WoEvent, "id" | "created_at">) {
   db.events.push({ ...event, id: newId(), created_at: nowIso() });
 }
+
+/** When a work order closes, keep the revision of each document it used (TMX-026). */
+function pinWoDocuments(db: Dataset, woId: string) {
+  for (const link of db.woDocuments.filter((l) => l.wo_id === woId)) {
+    link.pinned_revision_id = revisionToPin(
+      db.woDocumentViews.filter((v) => v.wo_id === woId && v.document_id === link.document_id),
+      db.documentRevisions.filter((r) => r.document_id === link.document_id),
+    );
+  }
+}
+
+function toDocItem(db: Dataset, doc: ControlledDocument): DocumentListItem {
+  const revs = db.documentRevisions.filter((r) => r.document_id === doc.id);
+  const replaced = doc.replaced_by_id ? db.documents.find((d) => d.id === doc.replaced_by_id) : undefined;
+  return {
+    ...doc,
+    current: currentRevision(revs),
+    pending: revs.find((r) => r.status === "draft") ?? null,
+    assets: db.documentAssets
+      .filter((l) => l.document_id === doc.id)
+      .map((l) => db.assets.find((a) => a.id === l.asset_id)!)
+      .sort((a, b) => a.floc.localeCompare(b.floc))
+      .map((a) => ({ id: a.id, floc: a.floc, name: a.name })),
+    replaced_by: replaced ? { id: replaced.id, doc_number: replaced.doc_number, title: replaced.title } : null,
+  };
+}
+
+const nameIn = (db: Dataset, id: string | null) => (id ? (db.profiles.find((p) => p.id === id)?.full_name ?? null) : null);
 
 /**
  * Demo data layer scoped to one site, like the live repository: every read
@@ -191,16 +254,22 @@ export class DemoRepository implements Repository {
       .sort((a, b) => a.part.part_number.localeCompare(b.part.part_number));
   }
 
-  async createWorkOrder(input: NewWorkOrderInput, actorId: string) {
+  async createWorkOrder(input: NewWorkOrderInput, actorId: string, opts: { jcn?: string; deferredFrom?: string; stage?: WoStage } = {}) {
     const db = store();
-    const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+    const jcn = opts.jcn ?? newJcn(db, this.siteId);
+    const seq = nextWceSeq(db.workOrders.filter((w) => w.site_id === this.siteId && w.jcn === jcn).map((w) => w.wce_seq));
     const id = newId();
+    const stage = opts.stage ?? "identification";
     db.workOrders.push({
       id,
       site_id: this.siteId,
-      wo_number: `WO-26-${next}`,
+      wo_number: wceNumber(jcn, seq),
+      jcn,
+      wce_seq: seq,
+      deferred_to_jcn: null,
+      deferred_from_wo_id: opts.deferredFrom ?? null,
       ...input,
-      stage: "identification",
+      stage,
       status: "open",
       reported_by: actorId,
       planner_id: null,
@@ -215,8 +284,72 @@ export class DemoRepository implements Repository {
       updated_at: nowIso(),
       closed_at: null,
     });
-    logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: "identification", note: null, actor_id: actorId });
+    logEvent(db, { wo_id: id, event_type: "created", from_stage: null, to_stage: stage, note: seq > 1 ? `WCE ${String(seq).padStart(3, "0")} added to JCN ${jcn}` : null, actor_id: actorId });
     return id;
+  }
+
+  async listJcn(jcn: string): Promise<WorkOrderListItem[]> {
+    const db = store();
+    return db.workOrders
+      .filter((w) => w.site_id === this.siteId && w.jcn === jcn)
+      .sort((a, b) => a.wce_seq - b.wce_seq)
+      .map((w) => toListItem(db, w));
+  }
+
+  async addWce(jcn: string, input: NewWorkOrderInput, actorId: string) {
+    const db = store();
+    const primary = db.workOrders.find((w) => w.site_id === this.siteId && w.jcn === jcn && w.wce_seq === 1);
+    if (!primary) throw new Error("JCN not found");
+    if (primary.status !== "open") throw new Error("This JCN is closed");
+    return this.createWorkOrder(input, actorId, { jcn });
+  }
+
+  async deferWorkOrder(woId: string, reason: string, actorId: string): Promise<string> {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("Only open work can be deferred");
+    // The remaining work becomes its own discrepancy under a new JCN, already reported.
+    const newId_ = await this.createWorkOrder(
+      {
+        title: wo.title,
+        description: `Deferred from WCE ${wo.wo_number}: ${reason}\n\n${wo.description}`,
+        asset_id: wo.asset_id,
+        wo_type: wo.wo_type === "preventive" ? "corrective" : wo.wo_type,
+        priority: wo.priority,
+        requires_shutdown: wo.requires_shutdown,
+      },
+      actorId,
+      { deferredFrom: wo.id, stage: "vetting" },
+    );
+    const carried = db.workOrders.find((w) => w.id === newId_)!;
+    this.releaseParts(db, woId);
+    const note = deferralNote(carried.jcn, reason);
+    pinWoDocuments(db, woId);
+    wo.status = "closed";
+    wo.debrief = note;
+    wo.deferred_to_jcn = carried.jcn;
+    wo.closed_at = nowIso();
+    wo.updated_at = nowIso();
+    logEvent(db, { wo_id: woId, event_type: "closed", from_stage: wo.stage, to_stage: null, note, actor_id: actorId });
+    return newId_;
+  }
+
+  /** Give back stock held for a work order that won't use it. */
+  private releaseParts(db: Dataset, woId: string) {
+    for (const p of db.woParts.filter((x) => x.wo_id === woId && (x.status === "reserved" || x.status === "kitted"))) {
+      const row = this.stock(db, p.part_id);
+      if (row) row.reserved = Math.max(row.reserved - p.qty_required, 0);
+      p.status = "planned";
+    }
+  }
+
+  async setPartEta(woPartId: string, date: string | null, _actorId: string) {
+    const db = store();
+    const line = db.woParts.find((p) => p.id === woPartId);
+    if (!line) throw new Error("Part line not found");
+    requireWo(db, line.wo_id, this.siteId);
+    if (line.status !== "planned") throw new Error("That part is already on site");
+    line.expected_on = date;
   }
 
   async moveStage(woId: string, to: WoStage, actorId: string, note?: string) {
@@ -251,6 +384,7 @@ export class DemoRepository implements Repository {
         id: newId(),
         wo_id: woId,
         seq: t.seq,
+        day: t.day ?? 1,
         description: t.description,
         craft: t.craft,
         crew_size: t.crew_size,
@@ -274,7 +408,17 @@ export class DemoRepository implements Repository {
         qty_required: p.qty,
         qty_used: 0,
         status: canReserve ? "reserved" : "planned",
+        // Short parts get an expected date from the catalog lead time; the storeroom can change it.
+        expected_on: canReserve || !part?.lead_time_days ? null : addDays(todayAt("UTC"), part.lead_time_days),
       });
+    }
+
+    // Documents the plan cites by number go on the work order.
+    const active = db.documents.filter((d) => d.site_id === this.siteId && d.status === "active");
+    for (const doc of citedDocuments(plan.references, active)) {
+      if (!db.woDocuments.some((l) => l.wo_id === woId && l.document_id === doc.id)) {
+        db.woDocuments.push({ id: newId(), wo_id: woId, document_id: doc.id, source: "plan", pinned_revision_id: null, added_by: actorId, added_at: nowIso() });
+      }
     }
 
     wo.plan_summary = plan.summary;
@@ -326,6 +470,12 @@ export class DemoRepository implements Repository {
   async closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string) {
     const db = store();
     const wo = requireWo(db, woId, this.siteId);
+    if (wo.wce_seq === 1 && db.workOrders.some((w) => w.site_id === this.siteId && w.jcn === wo.jcn && w.id !== wo.id && w.status === "open")) {
+      throw new Error("WCE -001 closes last: close the other WCEs on this JCN first");
+    }
+    const evidence = evidenceBlocker(wo, db.resolutions.filter((r) => r.wo_id === woId));
+    if (evidence) throw new Error(evidence);
+    pinWoDocuments(db, woId);
     wo.status = "closed";
     wo.actual_hours = actualHours;
     wo.debrief = debrief;
@@ -360,11 +510,17 @@ export class DemoRepository implements Repository {
       .map((w) => {
         const item = toListItem(db, w);
         const assignee = w.assigned_to ? db.profiles.find((p) => p.id === w.assigned_to) : undefined;
-        const craft_hours: Partial<Record<Craft, number>> = {};
-        for (const t of db.tasks.filter((t) => t.wo_id === w.id)) craft_hours[t.craft] = (craft_hours[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        const day_hours: CalendarWorkOrder["day_hours"] = {};
+        for (const t of db.tasks.filter((t) => t.wo_id === w.id && !t.is_complete)) {
+          const d = (day_hours[t.day] ??= {});
+          d[t.craft] = (d[t.craft] ?? 0) + t.est_hours * t.crew_size;
+        }
+        const short = db.woParts.filter((p) => p.wo_id === w.id && p.status === "planned");
         return {
           id: w.id,
           wo_number: w.wo_number,
+          jcn: w.jcn,
+          wce_seq: w.wce_seq,
           title: w.title,
           stage: w.stage,
           priority: w.priority,
@@ -377,7 +533,9 @@ export class DemoRepository implements Repository {
           created_at: w.created_at,
           asset: item.asset,
           assignee: assignee ? { id: assignee.id, full_name: assignee.full_name, craft: assignee.craft } : null,
-          craft_hours,
+          day_hours,
+          parts_short: short.length,
+          parts_ready_on: latestEta(short),
         };
       });
   }
@@ -417,6 +575,73 @@ export class DemoRepository implements Repository {
     }
   }
 
+  async getTroubleshooting(woId: string): Promise<TroubleshootingRecord> {
+    const db = store();
+    requireWo(db, woId, this.siteId);
+    const sign = <T extends { created_by: string | null }>(x: T) => ({ ...x, author_name: db.profiles.find((p) => p.id === x.created_by)?.full_name ?? null });
+    const byTime = (a: { created_at: string }, b: { created_at: string }) => a.created_at.localeCompare(b.created_at);
+    return {
+      actions: db.operatorActions.filter((a) => a.wo_id === woId).sort(byTime).map(sign),
+      findings: db.findings.filter((f) => f.wo_id === woId).sort(byTime).map(sign),
+      resolutions: db.resolutions.filter((r) => r.wo_id === woId).sort((a, b) => byTime(b, a)).map(sign),
+      addenda: db.addenda.filter((a) => a.wo_id === woId).sort(byTime).map(sign),
+    };
+  }
+
+  async listFailureCodes() {
+    const db = store();
+    return db.failureCodes.filter((c) => c.org_id === db.org.id);
+  }
+
+  async listResolutions(filter: { assetId?: string } = {}): Promise<ResolutionHistoryItem[]> {
+    const db = store();
+    return db.resolutions.flatMap((r) => {
+      const w = db.workOrders.find((x) => x.id === r.wo_id);
+      if (!w || w.site_id !== this.siteId || (filter.assetId && w.asset_id !== filter.assetId)) return [];
+      return [{ ...r, wo: { id: w.id, wo_number: w.wo_number, title: w.title, asset_id: w.asset_id, wo_type: w.wo_type, status: w.status, closed_at: w.closed_at, created_at: w.created_at } }];
+    });
+  }
+
+  /** Corrections must point at an entry on the same work order. */
+  private checkCorrects(list: { id: string; wo_id: string }[], woId: string, correctsId: string | null) {
+    if (correctsId && !list.some((x) => x.id === correctsId && x.wo_id === woId)) throw new Error("A correction must reference an entry on this work order");
+  }
+
+  async addOperatorAction(woId: string, input: NewOperatorAction, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    this.checkCorrects(db.operatorActions, woId, input.corrects_id);
+    db.operatorActions.push({ ...input, id: newId(), wo_id: woId, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Operator action: ${input.action}`, actor_id: actorId });
+  }
+
+  async addFinding(woId: string, input: NewFinding, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    this.checkCorrects(db.findings, woId, input.corrects_id);
+    db.findings.push({ ...input, id: newId(), wo_id: woId, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Finding: ${input.test} (${input.result})`, actor_id: actorId });
+  }
+
+  async recordResolution(woId: string, input: NewResolution, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("The work order is closed");
+    if (!input.finding_ids.every((fid) => db.findings.some((f) => f.id === fid && f.wo_id === woId))) throw new Error("Linked findings must be on this work order");
+    const previous = db.resolutions.filter((r) => r.wo_id === woId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    db.resolutions.push({ ...input, id: newId(), wo_id: woId, supersedes_id: previous?.id ?? null, created_by: actorId, created_at: nowIso() });
+    logEvent(db, { wo_id: woId, event_type: "note", from_stage: null, to_stage: null, note: `Resolution recorded: ${input.no_fault_found ? "no fault found" : input.cause_narrative}`, actor_id: actorId });
+  }
+
+  async addAddendum(woId: string, body: string, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "closed") throw new Error("Addenda are for closed work orders");
+    db.addenda.push({ id: newId(), wo_id: woId, body, created_by: actorId, created_at: nowIso() });
+  }
+
   async listPmSchedules(filter: { assetId?: string } = {}): Promise<PmScheduleRow[]> {
     const db = store();
     return db.pmSchedules
@@ -446,12 +671,16 @@ export class DemoRepository implements Repository {
       const state = dueState(row.next_due_on, asOf, PM_LEAD_DAYS);
       if (state !== "overdue" && state !== "due") continue;
       const plan = pmWorkPlan(row.task, row.asset.floc);
-      const next = Math.max(...db.workOrders.map((w) => Number(w.wo_number.split("-").pop()))) + 1;
+      const jcn = newJcn(db, this.siteId);
       const id = newId();
       db.workOrders.push({
         id,
         site_id: this.siteId,
-        wo_number: `WO-26-${next}`,
+        wo_number: wceNumber(jcn, 1),
+        jcn,
+        wce_seq: 1,
+        deferred_to_jcn: null,
+        deferred_from_wo_id: null,
         title: `PM ${row.task.code}: ${row.task.title}`,
         description: `Preventive maintenance from the PM program, due ${row.next_due_on}. Addresses failure modes ${row.task.failure_mode_codes.join(", ")}.`,
         asset_id: row.asset_id,
@@ -490,5 +719,234 @@ export class DemoRepository implements Repository {
     const open = db.workOrders.find((w) => w.pm_schedule_id === scheduleId && w.status === "open");
     if (open) logEvent(db, { wo_id: open.id, event_type: "note", from_stage: null, to_stage: null, note: `PM deferred from ${schedule.next_due_on} to ${toDate}: ${reason}`, actor_id: actorId });
     schedule.next_due_on = toDate;
+  }
+
+  // ---------------------------------------------------------------- Document control
+
+  private requireDoc(db: Dataset, id: string): ControlledDocument {
+    const doc = db.documents.find((d) => d.id === id && d.site_id === this.siteId);
+    if (!doc) throw new Error("Document not found");
+    return doc;
+  }
+
+  private newRevision(db: Dataset, documentId: string, input: NewRevisionInput, actorId: string): string {
+    const revs = db.documentRevisions.filter((r) => r.document_id === documentId);
+    if (revs.some((r) => r.status === "draft")) throw new Error("This document already has a draft waiting for review");
+    let file: RevisionFile | null = input.file;
+    if (input.file_data && input.file) {
+      const path = `mem:${newId()}`;
+      db.docFiles[path] = { data: input.file_data, mime: input.file.mime };
+      file = { ...input.file, path };
+    }
+    const id = newId();
+    db.documentRevisions.push({
+      id,
+      document_id: documentId,
+      rev: nextRev(revs),
+      status: "draft",
+      change_summary: input.change_summary,
+      body: input.body,
+      file,
+      prepared_by: actorId,
+      prepared_at: nowIso(),
+      reviewed_by: null,
+      reviewed_at: null,
+      review_note: null,
+      effective_at: null,
+      superseded_at: null,
+    });
+    return id;
+  }
+
+  async listDocuments(filter: { assetId?: string; includeObsolete?: boolean } = {}): Promise<DocumentListItem[]> {
+    const db = store();
+    return db.documents
+      .filter(
+        (d) =>
+          d.site_id === this.siteId &&
+          (filter.includeObsolete || d.status === "active") &&
+          (!filter.assetId || db.documentAssets.some((l) => l.document_id === d.id && l.asset_id === filter.assetId)),
+      )
+      .sort((a, b) => a.doc_number.localeCompare(b.doc_number))
+      .map((d) => toDocItem(db, d));
+  }
+
+  async getDocument(id: string): Promise<DocumentDetail | null> {
+    const db = store();
+    const doc = db.documents.find((d) => d.id === id && d.site_id === this.siteId);
+    if (!doc) return null;
+    return {
+      ...toDocItem(db, doc),
+      revisions: db.documentRevisions
+        .filter((r) => r.document_id === id)
+        .sort((a, b) => b.rev.length - a.rev.length || b.rev.localeCompare(a.rev))
+        .map((r) => ({ ...r, prepared_by_name: nameIn(db, r.prepared_by), reviewed_by_name: nameIn(db, r.reviewed_by) })),
+      usage: db.woDocuments
+        .filter((l) => l.document_id === id)
+        .map((l) => {
+          const wo = db.workOrders.find((w) => w.id === l.wo_id)!;
+          const rev = l.pinned_revision_id ? db.documentRevisions.find((r) => r.id === l.pinned_revision_id) : undefined;
+          return {
+            wo: { id: wo.id, wo_number: wo.wo_number, title: wo.title, status: wo.status, closed_at: wo.closed_at },
+            revision_id: l.pinned_revision_id,
+            rev: rev?.rev ?? null,
+          };
+        })
+        .sort((a, b) => (b.wo.closed_at ?? "9").localeCompare(a.wo.closed_at ?? "9")),
+    };
+  }
+
+  async createDocument(input: NewDocumentInput, actorId: string): Promise<string> {
+    const db = store();
+    const { site } = await this.getSite();
+    const id = newId();
+    db.documents.push({
+      id,
+      site_id: this.siteId,
+      doc_number: nextDocNumber(db.documents.filter((d) => d.site_id === this.siteId).map((d) => d.doc_number), site.code, input.doc_type),
+      title: input.title,
+      doc_type: input.doc_type,
+      status: "active",
+      replaced_by_id: null,
+      obsolete_reason: null,
+      obsoleted_by: null,
+      obsoleted_at: null,
+      created_by: actorId,
+      created_at: nowIso(),
+    });
+    this.newRevision(db, id, input.revision, actorId);
+    await this.setDocumentAssets(id, input.asset_ids, actorId);
+    return id;
+  }
+
+  async addRevision(documentId: string, input: NewRevisionInput, actorId: string): Promise<string> {
+    const db = store();
+    const doc = this.requireDoc(db, documentId);
+    if (doc.status !== "active") throw new Error("An obsolete document takes no new revisions");
+    return this.newRevision(db, documentId, input, actorId);
+  }
+
+  async reviewRevision(revisionId: string, approve: boolean, note: string | null, actorId: string) {
+    const db = store();
+    const rev = db.documentRevisions.find((r) => r.id === revisionId);
+    if (!rev) throw new Error("Revision not found");
+    const doc = this.requireDoc(db, rev.document_id);
+    if (rev.status !== "draft") throw new Error("Only a draft can be reviewed");
+    if (doc.status !== "active") throw new Error("The document is obsolete");
+    if (rev.prepared_by === actorId) throw new Error("A revision is approved by someone other than the person who wrote it");
+    const at = nowIso();
+    rev.reviewed_by = actorId;
+    rev.reviewed_at = at;
+    rev.review_note = note;
+    if (!approve) {
+      rev.status = "rejected";
+      return;
+    }
+    for (const r of db.documentRevisions.filter((x) => x.document_id === doc.id && x.status === "current")) {
+      r.status = "superseded";
+      r.superseded_at = at;
+    }
+    rev.status = "current";
+    rev.effective_at = at;
+  }
+
+  async obsoleteDocument(documentId: string, reason: string, replacedById: string | null, actorId: string) {
+    const db = store();
+    const doc = this.requireDoc(db, documentId);
+    if (doc.status !== "active") throw new Error("Already obsolete");
+    if (replacedById) {
+      if (replacedById === documentId) throw new Error("A document can't replace itself");
+      const by = this.requireDoc(db, replacedById);
+      if (by.status !== "active") throw new Error("The replacement must be an active document");
+    }
+    const at = nowIso();
+    doc.status = "obsolete";
+    doc.obsolete_reason = reason;
+    doc.replaced_by_id = replacedById;
+    doc.obsoleted_by = actorId;
+    doc.obsoleted_at = at;
+    for (const r of db.documentRevisions.filter((x) => x.document_id === documentId && x.status === "draft")) {
+      Object.assign(r, { status: "rejected", reviewed_by: actorId, reviewed_at: at, review_note: "Document made obsolete" } satisfies Partial<DocumentRevision>);
+    }
+  }
+
+  async setDocumentAssets(documentId: string, assetIds: string[], _actorId: string) {
+    const db = store();
+    this.requireDoc(db, documentId);
+    const valid = assetIds.filter((id) => db.assets.some((a) => a.id === id && a.site_id === this.siteId));
+    db.documentAssets = db.documentAssets.filter((l) => l.document_id !== documentId);
+    for (const asset_id of new Set(valid)) db.documentAssets.push({ document_id: documentId, asset_id, site_id: this.siteId });
+  }
+
+  async createUploadTarget(): Promise<UploadTarget> {
+    throw new Error("The demo keeps uploads in memory; send the file with the revision");
+  }
+
+  async getRevisionFile(revisionId: string): Promise<RevisionFileContent | null> {
+    const db = store();
+    const rev = db.documentRevisions.find((r) => r.id === revisionId);
+    if (!rev?.file || !db.documents.some((d) => d.id === rev.document_id && d.site_id === this.siteId)) return null;
+    if (rev.file.path.startsWith("/")) return { url: rev.file.path };
+    const mem = db.docFiles[rev.file.path];
+    return mem ? { data: Uint8Array.from(Buffer.from(mem.data, "base64")), mime: mem.mime, name: rev.file.name } : null;
+  }
+
+  async listWoDocuments(woId: string): Promise<WoDocumentRow[]> {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    return db.woDocuments
+      .filter((l) => l.wo_id === woId)
+      .map((l) => {
+        const doc = toDocItem(db, db.documents.find((d) => d.id === l.document_id)!);
+        const revision = wo.status === "open" ? doc.current : (db.documentRevisions.find((r) => r.id === l.pinned_revision_id) ?? null);
+        return {
+          ...l,
+          document: doc,
+          revision,
+          added_by_name: nameIn(db, l.added_by),
+          views: db.woDocumentViews
+            .filter((v) => v.wo_id === woId && v.document_id === l.document_id)
+            .sort((a, b) => b.viewed_at.localeCompare(a.viewed_at))
+            .map((v) => ({ ...v, rev: db.documentRevisions.find((r) => r.id === v.revision_id)!.rev, viewer_name: nameIn(db, v.viewed_by) })),
+        };
+      })
+      .sort((a, b) => a.document.doc_number.localeCompare(b.document.doc_number));
+  }
+
+  async attachDocument(woId: string, documentId: string, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    const doc = this.requireDoc(db, documentId);
+    if (wo.status !== "open") throw new Error("Closed work orders keep the documents they used");
+    if (doc.status !== "active") throw new Error("That document is obsolete");
+    if (db.woDocuments.some((l) => l.wo_id === woId && l.document_id === documentId)) return;
+    db.woDocuments.push({ id: newId(), wo_id: woId, document_id: documentId, source: "attached", pinned_revision_id: null, added_by: actorId, added_at: nowIso() });
+  }
+
+  async detachDocument(woId: string, documentId: string, _actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open") throw new Error("Closed work orders keep the documents they used");
+    if (db.woDocumentViews.some((v) => v.wo_id === woId && v.document_id === documentId)) {
+      throw new Error("Someone opened this document from the work order, so it stays with the record");
+    }
+    db.woDocuments = db.woDocuments.filter((l) => !(l.wo_id === woId && l.document_id === documentId));
+  }
+
+  async openWoDocument(woId: string, documentId: string, actorId: string): Promise<string> {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    this.requireDoc(db, documentId);
+    const link = db.woDocuments.find((l) => l.wo_id === woId && l.document_id === documentId);
+    const current = currentRevision(db.documentRevisions.filter((r) => r.document_id === documentId));
+    if (wo.status !== "open") {
+      const kept = link?.pinned_revision_id ?? current?.id;
+      if (!kept) throw new Error("No released revision");
+      return kept;
+    }
+    if (!current) throw new Error("This document has no approved revision yet");
+    if (!link) db.woDocuments.push({ id: newId(), wo_id: woId, document_id: documentId, source: "opened", pinned_revision_id: null, added_by: actorId, added_at: nowIso() });
+    db.woDocumentViews.push({ id: newId(), wo_id: woId, document_id: documentId, revision_id: current.id, stage: wo.stage, viewed_by: actorId, viewed_at: nowIso() });
+    return current.id;
   }
 }

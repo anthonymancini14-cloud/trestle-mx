@@ -4,7 +4,18 @@ import type {
   Asset,
   AssetClassWithModes,
   AssetDetail,
+  FailureCode,
+  Finding,
+  OperatorAction,
+  Resolution,
+  ResolutionHistoryItem,
+  TroubleshootingRecord,
   CalendarWorkOrder,
+  DocType,
+  DocumentDetail,
+  DocumentListItem,
+  RevisionFile,
+  WoDocumentRow,
   CrewMember,
   InventoryItem,
   Organization,
@@ -24,6 +35,38 @@ export interface WorkOrderFilter {
   status?: "open" | "closed" | "rejected";
   assetId?: string;
 }
+
+export type NewOperatorAction = Pick<OperatorAction, "conditions" | "action" | "result" | "ran_minutes" | "corrects_id">;
+export type NewFinding = Pick<Finding, "test" | "value" | "unit" | "spec" | "result" | "note" | "corrects_id">;
+export type NewResolution = Omit<Resolution, "id" | "wo_id" | "supersedes_id" | "created_by" | "created_at">;
+
+export interface NewRevisionInput {
+  change_summary: string;
+  /** Text written in Trestle, or null when the revision is a file. */
+  body: string | null;
+  /** A file already uploaded to storage (live) … */
+  file: RevisionFile | null;
+  /** … or, in the demo, the file's bytes (base64), kept in memory. */
+  file_data?: string;
+}
+
+export interface NewDocumentInput {
+  title: string;
+  doc_type: DocType;
+  asset_ids: string[];
+  /** Revision A, a draft until someone else approves it. */
+  revision: NewRevisionInput;
+}
+
+/** Where to put a revision's file before registering it. Live only: the browser uploads straight to storage. */
+export interface UploadTarget {
+  path: string;
+  signed_url: string;
+  token: string;
+}
+
+/** A revision's file: a URL to send the browser to, or the bytes (demo uploads). */
+export type RevisionFileContent = { url: string } | { data: Uint8Array; mime: string; name: string };
 
 export interface NewTimeOffInput {
   profile_id: string;
@@ -87,7 +130,61 @@ export interface Repository {
   addTimeOff(input: NewTimeOffInput, actorId: string): Promise<void>;
   updateShift(profileId: string, shiftHours: number, workDays: number[], actorId: string): Promise<void>;
 
+  /** A WCE's troubleshooting record: operator actions, findings, resolutions (newest first) and addenda. */
+  getTroubleshooting(woId: string): Promise<TroubleshootingRecord>;
+  /** Failure mechanisms and causes (failure modes come from the asset class). */
+  listFailureCodes(): Promise<FailureCode[]>;
+  /** Every resolution at the site with its work order, for history and repeat-failure checks. */
+  listResolutions(filter?: { assetId?: string }): Promise<ResolutionHistoryItem[]>;
+  addOperatorAction(woId: string, input: NewOperatorAction, actorId: string): Promise<void>;
+  addFinding(woId: string, input: NewFinding, actorId: string): Promise<void>;
+  /** Record (or supersede) the resolution. Linked findings must be on the same work order. */
+  recordResolution(woId: string, input: NewResolution, actorId: string): Promise<void>;
+  /** A note on a closed work order, which is never edited. */
+  addAddendum(woId: string, body: string, actorId: string): Promise<void>;
+
+  /** Controlled documents at the site. Obsolete ones only when asked for. */
+  listDocuments(filter?: { assetId?: string; includeObsolete?: boolean }): Promise<DocumentListItem[]>;
+  getDocument(id: string): Promise<DocumentDetail | null>;
+  /** A new document with its revision A as a draft. Returns the document id. */
+  createDocument(input: NewDocumentInput, actorId: string): Promise<string>;
+  /** A new draft revision (the next letter) on an active document. Returns the revision id. */
+  addRevision(documentId: string, input: NewRevisionInput, actorId: string): Promise<string>;
+  /** Approve a draft (it becomes current; the current one is superseded) or reject it. Not your own. */
+  reviewRevision(revisionId: string, approve: boolean, note: string | null, actorId: string): Promise<void>;
+  /** Archive a document as obsolete, optionally naming the active document that replaces it. Pending drafts are rejected. */
+  obsoleteDocument(documentId: string, reason: string, replacedById: string | null, actorId: string): Promise<void>;
+  setDocumentAssets(documentId: string, assetIds: string[], actorId: string): Promise<void>;
+  /** Live: a signed upload URL for a revision's file. */
+  createUploadTarget(fileName: string): Promise<UploadTarget>;
+  getRevisionFile(revisionId: string): Promise<RevisionFileContent | null>;
+
+  /** Documents on a work order, with the revision each shows (pinned once closed) and who opened them. */
+  listWoDocuments(woId: string): Promise<WoDocumentRow[]>;
+  attachDocument(woId: string, documentId: string, actorId: string): Promise<void>;
+  /** Only while open and only if nobody has opened it from the work order. */
+  detachDocument(woId: string, documentId: string, actorId: string): Promise<void>;
+  /**
+   * Open a document from a work order. While the work order is open this logs
+   * the view (and adds the document if it wasn't on it) and returns the current
+   * revision; once closed it returns the revision kept with the work order.
+   */
+  openWoDocument(woId: string, documentId: string, actorId: string): Promise<string>;
+
+  /** Report a new discrepancy: a new JCN with its WCE -001. Returns the work order id. */
   createWorkOrder(input: NewWorkOrderInput, actorId: string): Promise<string>;
+  /** Every WCE on a JCN, -001 first. */
+  listJcn(jcn: string): Promise<WorkOrderListItem[]>;
+  /** Another shop's WCE on an open JCN (next -NNN). Starts in Identification. */
+  addWce(jcn: string, input: NewWorkOrderInput, actorId: string): Promise<string>;
+  /**
+   * Close a WCE that can't be finished as deferred: the work is written up under
+   * a new JCN (its -001 starts in Vetting) and this WCE is signed off "Corrective
+   * action deferred, see JCN …". Returns the new work order's id.
+   */
+  deferWorkOrder(woId: string, reason: string, actorId: string): Promise<string>;
+  /** When a part that isn't on site is expected (storeroom or planner). */
+  setPartEta(woPartId: string, date: string | null, actorId: string): Promise<void>;
   moveStage(woId: string, to: WoStage, actorId: string, note?: string): Promise<void>;
   rejectWorkOrder(woId: string, actorId: string, note: string): Promise<void>;
   commitPlan(woId: string, plan: JobPlan, actorId: string): Promise<void>;

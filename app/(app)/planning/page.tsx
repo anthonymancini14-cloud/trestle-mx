@@ -52,7 +52,7 @@ export default async function PlanningQueuePage() {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Mono>{wo.wo_number}</Mono>
+                      <Mono className="whitespace-nowrap">{wo.wo_number}</Mono>
                       <PriorityBadge priority={wo.priority} compact />
                       {wo.asset && <CriticalityBadge criticality={wo.asset.criticality} />}
                       {wo.requires_shutdown && <span className="text-[11px] text-warn">Shutdown</span>}

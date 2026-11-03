@@ -13,6 +13,7 @@ export const ROLES = [
   "gatekeeper",
   "technician",
   "storeroom",
+  "operator",
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -23,6 +24,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   gatekeeper: "Gatekeeper",
   technician: "Technician",
   storeroom: "Storeroom",
+  operator: "Operator",
 };
 
 /** The six-stage work order lifecycle. */
@@ -49,7 +51,7 @@ export type WoStatus = "open" | "closed" | "rejected";
 export type WoType = "corrective" | "preventive" | "predictive" | "emergency" | "project";
 export type Priority = 1 | 2 | 3 | 4;
 export type Criticality = "A" | "B" | "C";
-export type Craft = "mechanical" | "electrical" | "instrumentation" | "operations" | "contractor";
+export type Craft = "mechanical" | "electrical" | "instrumentation" | "process_controls" | "operations" | "contractor";
 
 /** Industry vertical. Set per site; asset classes declare which verticals use them. */
 export const VERTICALS = ["industrial_utility", "data_center"] as const;
@@ -74,6 +76,8 @@ export interface Site {
   vertical: Vertical;
   /** Roles that may schedule and move work on the calendar at this site. Admin always can (TMX-015). */
   scheduler_roles: Role[];
+  /** First 4-digit job ID of each day's JCNs at this site, e.g. 5000 → 263045000, 263045001 … */
+  jcn_block: number;
 }
 
 export interface AreaCode {
@@ -243,10 +247,26 @@ export interface PmScheduleRow extends PmSchedule {
   deferrals: (PmDeferral & { approver_name: string | null })[];
 }
 
+/**
+ * A work order is one work center event (WCE) under a job control number (JCN),
+ * after the Air Force system Trestle.MX started from. JCN = YY + Julian day +
+ * the site's 4-digit job ID (263045000). Each shop's work on a discrepancy is
+ * its own WCE (263045000-001, -002 …) and runs the full lifecycle on its own.
+ * WCE -001 belongs to the shop primarily responsible; it closes last, with the
+ * corrective action summary, once every other WCE on the JCN is closed.
+ */
 export interface WorkOrder {
   id: string;
   site_id: string;
+  /** Display number: the WCE number, `${jcn}-${wce_seq padded to 3}`. */
   wo_number: string;
+  jcn: string;
+  /** 1 for the primary WCE. */
+  wce_seq: number;
+  /** Set when this WCE was closed as deferred: the new JCN that carries the work. */
+  deferred_to_jcn: string | null;
+  /** On a JCN's -001 written up for deferred work: the WCE it came from. */
+  deferred_from_wo_id: string | null;
   title: string;
   description: string;
   asset_id: string | null;
@@ -274,6 +294,8 @@ export interface WoTask {
   id: string;
   wo_id: string;
   seq: number;
+  /** Day of the WCE this step happens on, 1 = the scheduled date. Multi-day work uses 2, 3 … */
+  day: number;
   description: string;
   craft: Craft;
   crew_size: number;
@@ -343,6 +365,8 @@ export interface Part {
   category: string;
   unit: string;
   unit_cost: number;
+  /** Typical days from order to on site. Sets the expected date when a plan needs a part the storeroom doesn't have. */
+  lead_time_days: number | null;
   /** Structured specification for parts that need one (cables). */
   specs: PartSpecs | null;
 }
@@ -368,6 +392,8 @@ export interface WoPart {
   qty_required: number;
   qty_used: number;
   status: WoPartStatus;
+  /** For a part not yet on site (status planned): when it is expected. Null = no date yet. */
+  expected_on: string | null;
 }
 
 /** Joined shapes used by the UI. */
@@ -416,12 +442,13 @@ export interface InventoryItem extends InventoryRow {
 
 // ---------------------------------------------------------------- Scheduling
 
-export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "operations", "contractor"];
+export const CRAFTS: readonly Craft[] = ["mechanical", "electrical", "instrumentation", "process_controls", "operations", "contractor"];
 
 export const CRAFT_LABELS: Record<Craft, string> = {
   mechanical: "Mechanical",
   electrical: "Electrical",
   instrumentation: "Instrumentation",
+  process_controls: "Process controls",
   operations: "Operations",
   contractor: "Contractor",
 };
@@ -473,6 +500,264 @@ export interface CalendarWorkOrder
   > {
   asset: Pick<Asset, "id" | "floc" | "name" | "criticality"> | null;
   assignee: Pick<Profile, "id" | "full_name" | "craft"> | null;
-  /** Crew-hours by craft from the job plan (est hours × crew size). Empty until the job is planned. */
-  craft_hours: Partial<Record<Craft, number>>;
+  jcn: string;
+  wce_seq: number;
+  /** Crew-hours by day of the WCE (1 = scheduled date) and craft, from the job plan. Empty until planned. */
+  day_hours: Record<number, Partial<Record<Craft, number>>>;
+  /** Parts not yet on site: count, and the latest expected date (null if any has no date). */
+  parts_short: number;
+  parts_ready_on: string | null;
+}
+
+// ---------------------------------------------------------------- Troubleshooting record
+
+/**
+ * One troubleshooting record per WCE (TMX-006 to TMX-009): what the operator
+ * saw and tried, each test the tradesman made, and the proven cause with the
+ * test that proves the fix. Entries are never edited; a correction is a new
+ * entry that points at the one it corrects.
+ */
+
+/** What an operator saw and did before maintenance arrived, and what happened next. */
+export interface OperatorAction {
+  id: string;
+  wo_id: string;
+  /** Running state, alarms, readings when they acted. */
+  conditions: string;
+  action: string;
+  result: string;
+  /** How long it ran after the action, when it came back. */
+  ran_minutes: number | null;
+  corrects_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export const FINDING_RESULTS = ["pass", "fail", "info"] as const;
+export type FindingResult = (typeof FINDING_RESULTS)[number];
+
+/** One test, measurement or inspection, with the value and the spec it was judged against. */
+export interface Finding {
+  id: string;
+  wo_id: string;
+  test: string;
+  value: number | null;
+  unit: string | null;
+  /** The spec or baseline, as written (e.g. "100 MΩ minimum", "baseline 0.10 in/s"). */
+  spec: string | null;
+  result: FindingResult;
+  /** What it rules in or out. */
+  note: string | null;
+  corrects_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export const FAILURE_CODE_KINDS = ["mechanism", "cause"] as const;
+export type FailureCodeKind = (typeof FAILURE_CODE_KINDS)[number];
+
+/** A controlled failure mechanism or cause, modeled on ISO 14224. Org-wide when class_id is null. */
+export interface FailureCode {
+  id: string;
+  org_id: string;
+  class_id: string | null;
+  kind: FailureCodeKind;
+  code: string;
+  name: string;
+}
+
+export const OPERATOR_REVIEWS = ["helped", "masked", "no_effect", "none_taken"] as const;
+export type OperatorReview = (typeof OPERATOR_REVIEWS)[number];
+export const OPERATOR_REVIEW_LABELS: Record<OperatorReview, string> = {
+  helped: "Helped",
+  masked: "Masked the problem",
+  no_effect: "No effect",
+  none_taken: "No operator action",
+};
+
+/** The confirmed cause, the remedy, the findings that prove the cause and the test that proves the fix. */
+export interface Resolution {
+  id: string;
+  wo_id: string;
+  /** Failure mode code from the asset's class (e.g. VIB). */
+  failure_mode: string | null;
+  mechanism: string | null;
+  cause: string | null;
+  /** Explicit "no fault found": closes without a cause (TMX-006). */
+  no_fault_found: boolean;
+  cause_narrative: string;
+  remedy: string;
+  verification: string | null;
+  verification_passed: boolean | null;
+  operator_review: OperatorReview;
+  operator_review_note: string | null;
+  /** Findings that support the cause. */
+  finding_ids: string[];
+  /** A later resolution replaces this one. The current one is the newest. */
+  supersedes_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** Added to a closed work order, which is never edited (TMX-007). */
+export interface Addendum {
+  id: string;
+  wo_id: string;
+  body: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+type Signed<T> = T & { author_name: string | null };
+
+export interface TroubleshootingRecord {
+  actions: Signed<OperatorAction>[];
+  findings: Signed<Finding>[];
+  /** Newest first; the first is current. */
+  resolutions: Signed<Resolution>[];
+  addenda: Signed<Addendum>[];
+}
+
+/** A resolution with its work order, for history and repeat-failure checks. */
+export interface ResolutionHistoryItem extends Resolution {
+  wo: Pick<WorkOrder, "id" | "wo_number" | "title" | "asset_id" | "wo_type" | "status" | "closed_at" | "created_at">;
+}
+
+// ---------------------------------------------------------------- Document control (TMX-026)
+
+/** Controlled document types. Each has a short code used in the document number, e.g. BRP-DWG-0003. */
+export const DOC_TYPES = ["oem_manual", "drawing", "specification", "procedure", "moc"] as const;
+export type DocType = (typeof DOC_TYPES)[number];
+
+export const DOC_TYPE_LABELS: Record<DocType, string> = {
+  oem_manual: "OEM manual",
+  drawing: "Drawing",
+  specification: "Technical specification",
+  procedure: "Procedure",
+  moc: "Management of change",
+};
+
+export const DOC_TYPE_CODES: Record<DocType, string> = {
+  oem_manual: "OEM",
+  drawing: "DWG",
+  specification: "SPC",
+  procedure: "PRC",
+  moc: "MOC",
+};
+
+/** Active documents are in use; obsolete ones are archived (kept, read-only) and may name a replacement. */
+export type DocStatus = "active" | "obsolete";
+
+/**
+ * A revision is drafted, then approved by a second person and becomes current;
+ * the revision it replaces is superseded (archived). A rejected draft is kept.
+ * A revision's content never changes after it is written.
+ */
+export type RevisionStatus = "draft" | "current" | "superseded" | "rejected";
+
+export interface ControlledDocument {
+  id: string;
+  site_id: string;
+  /** e.g. CFD-DWG-0001: site code, type code, sequence. Assigned when created. */
+  doc_number: string;
+  title: string;
+  doc_type: DocType;
+  status: DocStatus;
+  /** Set when obsoleted: the document that replaces it, if any. */
+  replaced_by_id: string | null;
+  obsolete_reason: string | null;
+  obsoleted_by: string | null;
+  obsoleted_at: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** The revision's file, when it has one (PDF, drawing, image). */
+export interface RevisionFile {
+  name: string;
+  mime: string;
+  size: number;
+  /** Storage object path (live) or a static or in-memory path (demo). */
+  path: string;
+}
+
+export interface DocumentRevision {
+  id: string;
+  document_id: string;
+  /** Revision letter: A, B, C … */
+  rev: string;
+  status: RevisionStatus;
+  /** What changed in this revision. */
+  change_summary: string;
+  /** Text written in Trestle (procedures, MOCs, spec sheets), in simple markdown. */
+  body: string | null;
+  file: RevisionFile | null;
+  prepared_by: string | null;
+  prepared_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  /** When it became current. */
+  effective_at: string | null;
+  /** When a newer revision replaced it. */
+  superseded_at: string | null;
+}
+
+/** A document with its current revision and the assets it applies to. */
+export interface DocumentListItem extends ControlledDocument {
+  current: DocumentRevision | null;
+  /** A draft waiting for review, if there is one. */
+  pending: DocumentRevision | null;
+  assets: Pick<Asset, "id" | "floc" | "name">[];
+  replaced_by: Pick<ControlledDocument, "id" | "doc_number" | "title"> | null;
+}
+
+export interface DocumentDetail extends DocumentListItem {
+  /** Newest first. */
+  revisions: (DocumentRevision & { prepared_by_name: string | null; reviewed_by_name: string | null })[];
+  /** Work orders that referenced it, with the revision each used (pinned at close). */
+  usage: DocumentUsage[];
+}
+
+export interface DocumentUsage {
+  wo: Pick<WorkOrder, "id" | "wo_number" | "title" | "status" | "closed_at">;
+  /** The revision kept with the closed work order; null while the work order is open. */
+  revision_id: string | null;
+  rev: string | null;
+}
+
+/** How a document came to be on a work order. */
+export type WoDocSource = "plan" | "attached" | "opened";
+
+/**
+ * A document on a work order. While the work order is open it follows the
+ * current revision; when it closes, the revision used is pinned and kept.
+ */
+export interface WoDocument {
+  id: string;
+  wo_id: string;
+  document_id: string;
+  source: WoDocSource;
+  pinned_revision_id: string | null;
+  added_by: string | null;
+  added_at: string;
+}
+
+/** Each time someone opened a document from a work order, and which revision they saw. */
+export interface WoDocumentView {
+  id: string;
+  wo_id: string;
+  document_id: string;
+  revision_id: string;
+  stage: WoStage;
+  viewed_by: string | null;
+  viewed_at: string;
+}
+
+export interface WoDocumentRow extends WoDocument {
+  document: DocumentListItem;
+  /** The pinned revision on closed work; the current one while open. */
+  revision: DocumentRevision | null;
+  added_by_name: string | null;
+  views: (WoDocumentView & { rev: string; viewer_name: string | null })[];
 }

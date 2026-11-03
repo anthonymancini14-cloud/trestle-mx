@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Select } from "@/components/ui/primitives";
 import { addTimeOff, setSchedulerRoles, updateShift } from "@/lib/actions";
 import { cn, formatDay } from "@/lib/utils";
-import { CRAFT_LABELS, ROLE_LABELS, ROLES, type CrewMember, type Role } from "@/types/domain";
+import { CRAFT_LABELS, CRAFTS, ROLE_LABELS, ROLES, type Craft, type CrewMember, type Role } from "@/types/domain";
+
+const PAGE = 25;
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** Display order Monday first. */
@@ -15,7 +17,19 @@ const WEEK = [1, 2, 3, 4, 5, 6, 0];
 export function RosterPanel({ crew, canEdit, today }: { crew: CrewMember[]; canEdit: boolean; today: string }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [addingOff, setAddingOff] = useState(false);
-  const weekly = crew.reduce((s, m) => s + (m.shift ? m.shift.shift_hours * m.shift.work_days.length : 0), 0);
+  const [q, setQ] = useState("");
+  const [craft, setCraft] = useState<"" | Craft>("");
+  const [showAll, setShowAll] = useState(false);
+  const weeklyOf = (m: CrewMember) => (m.shift ? m.shift.shift_hours * m.shift.work_days.length : 0);
+  const weekly = crew.reduce((s, m) => s + weeklyOf(m), 0);
+  // By craft, so a roster of hundreds still reads at a glance.
+  const byCraft = CRAFTS.map((c) => {
+    const people = crew.filter((m) => m.craft === c);
+    return { craft: c, count: people.length, hours: people.reduce((s, m) => s + weeklyOf(m), 0) };
+  }).filter((g) => g.count > 0);
+  const query = q.trim().toLowerCase();
+  const matches = crew.filter((m) => (!craft || m.craft === craft) && (!query || m.full_name.toLowerCase().includes(query)));
+  const shown = showAll ? matches : matches.slice(0, PAGE);
 
   return (
     <section aria-label="Crew roster" className="rounded-[3px] border border-line bg-panel">
@@ -34,6 +48,23 @@ export function RosterPanel({ crew, canEdit, today }: { crew: CrewMember[]; canE
         )}
       </header>
       {addingOff && <TimeOffForm crew={crew} today={today} onClose={() => setAddingOff(false)} />}
+      <div className="flex flex-wrap gap-1.5 border-b border-line px-4 py-2.5">
+        {byCraft.map((g) => (
+          <button
+            key={g.craft}
+            type="button"
+            onClick={() => setCraft((c) => (c === g.craft ? "" : g.craft))}
+            aria-pressed={craft === g.craft}
+            className={cn(
+              "min-h-9 rounded-[3px] border px-2.5 text-left text-xs",
+              craft === g.craft ? "border-brass bg-brass/10 text-brass-bright" : "border-line-strong text-tx-2 hover:border-brass-dim",
+            )}
+          >
+            <span className="font-semibold">{CRAFT_LABELS[g.craft]}</span> · {g.count} · <span className="font-mono">{g.hours} h/wk</span>
+          </button>
+        ))}
+        <Input aria-label="Search the roster" placeholder="Search by name" value={q} onChange={(e) => setQ(e.target.value)} className="ml-auto h-9 w-full sm:w-56" />
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
           <thead>
@@ -46,7 +77,7 @@ export function RosterPanel({ crew, canEdit, today }: { crew: CrewMember[]; canE
             </tr>
           </thead>
           <tbody>
-            {crew.map((m) => {
+            {shown.map((m) => {
               const upcoming = m.time_off.filter((t) => t.ends_on >= today);
               return (
                 <tr key={m.id} className="align-top">
@@ -102,6 +133,15 @@ export function RosterPanel({ crew, canEdit, today }: { crew: CrewMember[]; canE
           </tbody>
         </table>
       </div>
+      {matches.length > PAGE && (
+        <div className="border-t border-line px-4 py-2 text-xs text-tx-3">
+          Showing {shown.length} of {matches.length}.{" "}
+          <button type="button" className="text-brass hover:text-brass-bright" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Show fewer" : "Show all"}
+          </button>
+        </div>
+      )}
+      {matches.length === 0 && <p className="px-4 py-4 text-center text-xs text-tx-3">No technicians match.</p>}
     </section>
   );
 }

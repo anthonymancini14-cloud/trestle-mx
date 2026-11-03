@@ -17,9 +17,13 @@ General planning and scheduling principles widely taught in the reliability prof
 
 - Plan the job, not the person: assume a qualified craftsperson, do not write a training manual.
 - Kit parts before the job is scheduled. A job is "ready" only when parts, permits and access are confirmed.
-- Use history. If the last similar job overran, find out why and plan for it.
+- Use history. If the last similar job overran, find out why and plan for it. Where past work has a proven cause (the findings behind it and the test that proved the fix), plan from that cause, not from the symptom. If the same failure mode came back within the repeat window, say so: the last fix didn't hold, and the plan should go after the cause.
+- Read the operator's first response and the findings so far before choosing the steps. Don't repeat a test that has already been done unless the plan says why.
 - Write open questions down instead of guessing. The field walkdown answers them.
 - Separate what is known from what is assumed about failure cause.
+- One WCE per shop. A work order is a work center event (WCE) on a job control number (JCN). When the job needs another shop (scaffold, electrical isolation, controls), plan only this WCE's own steps and say in the plan which other WCEs the job needs and when they must happen (for example, scaffold erected the day before). Each shop's WCE is planned, scheduled and closed on its own; WCE -001 belongs to the shop primarily responsible and closes last with the corrective action summary.
+- Plan multi-day work by day. When a WCE runs over more than one day (curing, drain-down, a long rebuild, scaffold up and later down), give each step its day number: 1 is the scheduled date. One-day work leaves the day off.
+- Work from controlled documents. The site context lists the current revision of each procedure, drawing, specification, OEM manual and MOC for the asset. Plan from the current procedure's steps and the OEM's values (torques, clearances, intervals) instead of from memory, and cite every document the crew needs by its number (for example "BRP-PRC-0003 Rev C") in the references: cited documents go on the work order, and the revision the crew uses is kept with it when it closes. Never plan from a draft or a superseded revision. If the job shows a procedure is wrong or missing a step, say so in the open questions so the planner revises the document.
 - Bundle work. When the asset is coming out of service, check its PM schedule in the site context and fold in PM tasks that fall due soon (or are overdue), so the asset comes out once instead of twice. Name the PM task codes in the plan.
 
 ## Common metrics a plan influences

@@ -11,6 +11,8 @@
 import { seedId } from "./ids";
 import { ASSET_CLASS_LIBRARY } from "@/lib/taxonomy/library";
 import type {
+  FindingResult,
+  OperatorReview,
   AreaCode,
   Asset,
   AssetAttributes,
@@ -39,6 +41,7 @@ export const SITE: Site = {
   timezone: "America/Los_Angeles",
   vertical: "industrial_utility",
   scheduler_roles: ["supervisor"],
+  jcn_block: 1000,
 };
 
 const AREA_DEFS: [string, string][] = [
@@ -82,6 +85,9 @@ export const PROFILES: Profile[] = [
   { id: seedId("profile", 7), full_name: "Teresa Molina", role: "storeroom", craft: null, is_active: true },
   { id: seedId("profile", 8), full_name: "Chris Novak", role: "admin", craft: null, is_active: true },
   { id: seedId("profile", 9), full_name: "Devon Hale", role: "technician", craft: "mechanical", is_active: true },
+  { id: seedId("profile", 10), full_name: "Nate Ellis", role: "technician", craft: "process_controls", is_active: true },
+  { id: seedId("profile", 11), full_name: "Luis Ortega", role: "technician", craft: "contractor", is_active: true },
+  { id: seedId("profile", 12), full_name: "Grace Lin", role: "operator", craft: null, is_active: true },
 ];
 
 export const personId = (name: string) => {
@@ -210,6 +216,12 @@ const PART_DEFS: PartDef[] = [
   { pn: "MX-DA-VENT-KIT", desc: "Deaerator vent valve rebuild kit", cat: "Valves", cost: 226, bin: "E-02-04", onHand: 1, min: 0, max: 1 },
 ];
 
+/** Typical order-to-site days by storeroom category (demo values). */
+export const LEAD_TIME_DAYS: Record<string, number> = {
+  Alignment: 5, Bearings: 5, Belts: 3, Cable: 5, "Chemical feed": 10, Consumables: 2, Couplings: 7, Electrical: 10,
+  "Fiber connectivity": 5, Filters: 3, Gaskets: 5, HVAC: 10, Instrumentation: 10, Lubricants: 2, "Pathway hardware": 7, Seals: 7, Valves: 21,
+};
+
 export const PARTS: Part[] = PART_DEFS.map((d, i) => ({
   id: seedId("part", i + 1),
   org_id: ORG.id,
@@ -220,6 +232,7 @@ export const PARTS: Part[] = PART_DEFS.map((d, i) => ({
   category: d.cat,
   unit: d.unit ?? "ea",
   unit_cost: d.cost,
+  lead_time_days: LEAD_TIME_DAYS[d.cat] ?? null,
   specs: null,
 }));
 
@@ -251,6 +264,8 @@ export interface TaskDef {
   safety?: string;
   accept?: string;
   done?: boolean;
+  /** Day of the WCE, 1 = scheduled date. */
+  day?: number;
 }
 
 export interface WoPartDef {
@@ -259,10 +274,50 @@ export interface WoPartDef {
   qty: number;
   used?: number;
   status?: WoPartStatus;
+  /** Not on site yet: expected in this many days. */
+  etaInDays?: number;
+}
+
+/**
+ * Seeded troubleshooting record. Operator actions and findings marked
+ * `onReport` are hours after the write-up; other findings and the resolution
+ * are hours into the work (from the scheduled date). Addenda are days after close.
+ */
+export interface TroubleDef {
+  actions?: { at: number; by: string; conditions: string; action: string; result: string; ranMinutes?: number }[];
+  findings?: { at: number; onReport?: boolean; by: string; test: string; value?: number; unit?: string; spec?: string; result: FindingResult; note?: string }[];
+  resolution?: {
+    at: number;
+    by: string;
+    mode?: string;
+    mechanism?: string;
+    cause?: string;
+    nff?: boolean;
+    why: string;
+    remedy: string;
+    verification?: string;
+    verified?: boolean;
+    review: OperatorReview;
+    reviewNote?: string;
+    /** Indexes into `findings` that support the cause. */
+    supportedBy: number[];
+  };
+  addenda?: { daysAfterClose: number; by: string; body: string }[];
 }
 
 export interface WoDef {
+  /** Seed key. The real number is a JCN-WCE built from the dates (lib/jcn.ts). */
   num: number;
+  trouble?: TroubleDef;
+  /** This is another shop's WCE on the JCN of seed `wceOf` (its -001). */
+  wceOf?: number;
+  /** Closed as deferred: the work was written up under the JCN of seed `deferredTo`. */
+  deferredTo?: number;
+  deferReason?: string;
+  /** Scheduled on the assignee's last work day before seed `startsBefore` starts (scaffold up first). */
+  startsBefore?: number;
+  /** Scheduled the same day seed `startsWith` starts (support crafts on the main job). */
+  startsWith?: number;
   title: string;
   description: string;
   floc: string | null;
@@ -311,6 +366,28 @@ export const WO_DEFS: WoDef[] = [
       { pn: "MX-GSK-HSC12", qty: 1, used: 1, status: "issued" },
       { pn: "MX-SHIM-KIT", qty: 1, used: 1, status: "issued" },
     ],
+    trouble: {
+      actions: [
+        { at: -1.5, by: "Grace", conditions: "P-201A running at 92% speed. High vibration alarm on the control system; inboard bearing housing hot to the touch.", action: "Started P-201B, stopped and isolated P-201A.", result: "Header pressure held on B; process stable." },
+      ],
+      findings: [
+        { at: 1, onReport: true, by: "Jordan", test: "Inboard bearing housing overall vibration", value: 0.38, unit: "in/s", spec: "Baseline 0.10 in/s; alert 0.25", result: "fail", note: "Bearing defect frequencies present in the spectrum." },
+        { at: 1.5, onReport: true, by: "Jordan", test: "Inboard bearing temperature", value: 196, unit: "°F", spec: "About 150 °F typical", result: "fail" },
+        { at: 3, by: "Jordan", test: "Soft foot check, motor feet", value: 0.006, unit: "in", spec: "0.002 in maximum", result: "fail", note: "Motor outboard foot." },
+        { at: 6, by: "Jordan", test: "Teardown: inboard bearing inspection", result: "fail", note: "Spalling on the outer race, load zone offset toward the motor: misalignment pattern." },
+      ],
+      resolution: {
+        at: 30, by: "Jordan", mode: "VIB", mechanism: "2.4", cause: "2.2",
+        why: "Inboard bearing wore out from shaft misalignment. The motor sat on uncorrected soft foot, so alignment drifted after the last coupling job.",
+        remedy: "Replaced both bearings, shimmed out the soft foot, laser aligned to 0.002 in offset.",
+        verification: "Ran 4 h: inboard 0.09 in/s, 151 °F.", verified: true,
+        review: "helped", reviewNote: "Switching to B straight away kept the bearing from seizing on the shaft.",
+        supportedBy: [0, 2, 3],
+      },
+      addenda: [
+        { daysAfterClose: 60, by: "Lena", body: "Two months on, the vibration route reads 0.07 in/s on the inboard bearing. The repair is holding. Soft foot check added to the split-case pump job template." },
+      ],
+    },
   },
   {
     num: 1012,
@@ -352,6 +429,12 @@ export const WO_DEFS: WoDef[] = [
       { pn: "MX-VLV-BALL-050", qty: 1, used: 1, status: "issued" },
       { pn: "MX-PG-0300", qty: 1, used: 1, status: "issued" },
     ],
+    trouble: {
+      findings: [
+        { at: 0.5, by: "Riley", test: "Discharge gauge with pump running, isolation valve open", value: 0, unit: "psi", spec: "About 60 psi normal", result: "fail", note: "Gauge isolation valve seized closed." },
+        { at: 1.5, by: "Riley", test: "Discharge pressure after valve replacement, against a test gauge", value: 62, unit: "psi", spec: "Test gauge 61 psi, within 2 psi", result: "pass" },
+      ],
+    },
   },
   {
     num: 1020,
@@ -379,6 +462,11 @@ export const WO_DEFS: WoDef[] = [
       { desc: "Re-energize, re-scan with IR camera under load", craft: "electrical", hours: 0.5, accept: "Phase-to-phase delta under 3 °C" },
     ],
     parts: [{ pn: "MX-ELEC-LUG-KIT", qty: 1, status: "kitted" }],
+    trouble: {
+      findings: [
+        { at: 0, onReport: true, by: "Alex", test: "Infrared survey, bucket 3C load-side lugs", value: 18, unit: "°C rise", spec: "Under 10 °C rise over similar phases", result: "fail", note: "Phase B only." },
+      ],
+    },
   },
   {
     num: 1024,
@@ -425,7 +513,7 @@ export const WO_DEFS: WoDef[] = [
       { desc: "Replace coupling element, check alignment and correct if over 0.003 in offset", craft: "mechanical", crew: 1, hours: 2 },
       { desc: "Return to service, observe one full backwash", craft: "operations", hours: 0.5 },
     ],
-    parts: [{ pn: "MX-CPL-ELAST-8", qty: 1, status: "reserved" }],
+    parts: [{ pn: "MX-CPL-ELAST-8", qty: 1, status: "planned", etaInDays: 4 }],
   },
   {
     num: 1029,
@@ -491,12 +579,50 @@ export const WO_DEFS: WoDef[] = [
   },
 
   // ---------------- Vetting ----------------
+  // Same compressor, same symptom, 40 days earlier: the new discrepancy flags as a possible repeat.
+  {
+    num: 1049,
+    title: "Air compressor tripping on high discharge temperature",
+    description: "C-801 tripped twice on high discharge temperature during the afternoon heat.",
+    floc: "BRP-AIR-C-801", type: "corrective", priority: 2, stage: "closure", status: "closed",
+    reportedBy: "Grace", assignedTo: "Devon", createdDaysAgo: 40, closedAfterDays: 2, estHours: 2.5, actualHours: 3.5,
+    debrief: "Oil cooler fins about 60% blocked with dust and cottonwood. Cleaned with air and low-pressure water; took an hour longer than planned to get the fins clear. Cleaning on the 2000-hour service isn't often enough in summer.",
+    tasks: [
+      { desc: "Lock out C-801; inspect oil cooler and thermostatic valve", craft: "mechanical", hours: 1, done: true },
+      { desc: "Clean cooler fins; check oil level; return to service", craft: "mechanical", hours: 1.5, done: true },
+    ],
+    trouble: {
+      actions: [
+        { at: -2, by: "Grace", conditions: "Tripped on high discharge temperature mid-afternoon.", action: "Reset the trip and restarted.", result: "Tripped again 90 minutes later.", ranMinutes: 90 },
+      ],
+      findings: [
+        { at: 1, onReport: true, by: "Devon", test: "Discharge temperature before trip, controller log", value: 228, unit: "°F", spec: "Trip at 230 °F; normal about 190 °F", result: "fail" },
+        { at: 1, by: "Devon", test: "Oil cooler fin blockage, visual", value: 60, unit: "% blocked", spec: "Clean", result: "fail", note: "Dust and cottonwood packed in the fins." },
+        { at: 1.5, by: "Devon", test: "Thermostatic valve: fully open temperature", value: 180, unit: "°F", spec: "Open by 185 °F", result: "pass", note: "Rules out the valve." },
+        { at: 1.6, by: "Devon", test: "Oil level", result: "pass", note: "At the full mark." },
+      ],
+      resolution: {
+        at: 4, by: "Devon", mode: "UST", mechanism: "5.1", cause: "3.4",
+        why: "Oil cooler plugged with airborne debris, so the oil ran hot and the compressor tripped on discharge temperature.",
+        remedy: "Cleaned the cooler fins with air and low-pressure water.",
+        verification: "Ran the next afternoon at 96 °F room temperature: discharge 191 °F.", verified: true,
+        review: "masked", reviewNote: "The reset ran a hot compressor for another 90 minutes. Switch to the backup on a high-temperature trip instead.",
+        supportedBy: [0, 1],
+      },
+    },
+  },
   {
     num: 1038,
     title: "Air compressor intermittent high discharge temperature alarm",
     description: "Compressor tripped on high discharge temperature twice this week, both afternoons.",
     floc: "BRP-AIR-C-801", type: "corrective", priority: 2, stage: "vetting",
     reportedBy: "Sam", createdDaysAgo: 1,
+    trouble: {
+      actions: [
+        { at: -3, by: "Grace", conditions: "C-801 tripped on high discharge temperature at 15:40, compressor room about 98 °F.", action: "Reset the trip and restarted.", result: "Ran about 2 hours, tripped again.", ranMinutes: 125 },
+        { at: -0.5, by: "Grace", conditions: "Second trip. Plant air header falling.", action: "Opened the compressor room doors and started the backup compressor.", result: "Header recovered on the backup." },
+      ],
+    },
   },
   {
     num: 1039,
@@ -514,11 +640,55 @@ export const WO_DEFS: WoDef[] = [
   },
 
   // ---------------- Identification ----------------
+  // One discrepancy, three shops: the mechanical WCE (-001) owns the fix and
+  // runs two days; a contractor scaffolds the day before and strikes it after;
+  // electrical locks out and uncouples the motor. Each WCE runs its own lifecycle.
   {
     num: 1041,
-    title: "Cooling tower gearbox oil leak at output seal",
-    description: "Oil film on fan deck around gearbox output shaft. Sight glass still in range.",
-    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "identification",
+    title: "Cooling tower fan F-601 gearbox output seal replacement",
+    description: "Oil film on fan deck around the gearbox output shaft, sight glass dropping about 1/4 in a week. Replace the output shaft seal before the gearbox runs low.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution", shutdown: true,
+    reportedBy: "Jordan", assignedTo: "Jordan", createdDaysAgo: 6, scheduledInDays: 5,
+    planSummary: "Two-day seal job on the fan deck: drain, pull the fan hub, replace the output seal, reassemble and run. Scaffold goes up the day before (WCE -002); electrical isolates and uncouples the motor (WCE -003).",
+    tasks: [
+      { desc: "Confirm scaffold tagged green and motor locked out (WCE -003); drain gearbox oil", craft: "mechanical", crew: 2, hours: 1, day: 1 },
+      { desc: "Remove fan hub and blades to the deck; pull output shaft seal, inspect shaft for grooving", craft: "mechanical", crew: 2, hours: 4, day: 1 },
+      { desc: "Install new seal, refit hub and set blade pitch; refill gearbox", craft: "mechanical", crew: 2, hours: 3, day: 2, accept: "Blade pitch within 0.5° of each other; oil at the full mark." },
+      { desc: "Run test with electrical; check for leaks and vibration", craft: "mechanical", hours: 1, day: 2, accept: "No seal leak after 30 min; overall vibration under 0.3 in/s." },
+    ],
+    parts: [{ pn: "MX-GBX-SEAL-CT14", qty: 1, status: "planned", etaInDays: 2 }],
+  },
+  {
+    num: 1046,
+    wceOf: 1041,
+    title: "Scaffold for F-601 gearbox access: erect and strike",
+    description: "Tube-and-clamp scaffold on the fan deck to reach the gearbox. Erect on the last work day before the seal job; strike on the first work day after the run test.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution",
+    reportedBy: "Marcus", assignedTo: "Luis", createdDaysAgo: 5, scheduledInDays: 2, startsBefore: 1041,
+    planSummary: "Erect, inspect and tag the scaffold before the seal job starts; strike it the first work day after the mechanical WCE's run test. It stands idle in between.",
+    tasks: [
+      { desc: "Erect scaffold at the gearbox access; competent person inspects and tags green", craft: "contractor", crew: 2, hours: 4, day: 1, accept: "Scaffold tag green and signed." },
+      { desc: "Strike scaffold and clear the fan deck", craft: "contractor", crew: 2, hours: 3, day: 4 },
+    ],
+  },
+  {
+    num: 1047,
+    wceOf: 1041,
+    title: "F-601 motor lockout, uncouple and insulation test",
+    description: "Electrical support for the gearbox seal job: isolate and uncouple the 40 hp fan motor, then megger and recouple before the run test.",
+    floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution",
+    reportedBy: "Marcus", assignedTo: "Alex", createdDaysAgo: 5, scheduledInDays: 5, startsWith: 1041,
+    planSummary: "Lock out at MCC-702, uncouple on day 1; insulation test and recouple on day 2 before the run test.",
+    tasks: [
+      { desc: "Lock out the fan motor at MCC-702 and verify zero energy; uncouple", craft: "electrical", hours: 1.5, day: 1 },
+      { desc: "Insulation resistance test, recouple and release for the run test", craft: "electrical", hours: 1, day: 2, accept: "Insulation resistance over 100 MΩ at 500 V." },
+    ],
+  },
+  {
+    num: 1048,
+    title: "Cooling tower basin strainer screen torn",
+    description: "Operator rounds found a torn section on the basin outlet strainer screen. Debris getting to the pump suction.",
+    floc: "BRP-CTW-P-602", type: "corrective", priority: 3, stage: "identification",
     reportedBy: "Jordan", createdDaysAgo: 0,
   },
   {

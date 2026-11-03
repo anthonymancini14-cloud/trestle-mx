@@ -24,6 +24,15 @@ const TABLE_KEYS = {
   pmDeferral: "012",
   crewShift: "013",
   timeOff: "014",
+  failureCode: "015",
+  operatorAction: "016",
+  finding: "017",
+  resolution: "018",
+  addendum: "019",
+  document: "01a",
+  documentRevision: "01b",
+  woDocument: "01c",
+  woDocumentView: "01d",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

@@ -92,6 +92,35 @@ async function main() {
   await insert("wo_tasks", db.tasks);
   await insert("wo_parts", db.woParts);
   await insert("wo_events", db.events.map((e) => ({ ...e, actor_id: mapPerson(e.actor_id) })));
+  await insert("failure_codes", db.failureCodes);
+  await insert("discrepancy_actions", db.operatorActions.map((a) => ({ ...a, created_by: mapPerson(a.created_by) })));
+  await insert("wo_findings", db.findings.map((f) => ({ ...f, created_by: mapPerson(f.created_by) })));
+  await insert("wo_resolutions", db.resolutions.map(({ finding_ids: _links, ...r }) => ({ ...r, created_by: mapPerson(r.created_by) })));
+  await insert("wo_resolution_findings", db.resolutions.flatMap((r) => r.finding_ids.map((finding_id) => ({ resolution_id: r.id, finding_id }))));
+  await insert("wo_addenda", db.addenda.map((a) => ({ ...a, created_by: mapPerson(a.created_by) })));
+  // Document control: replacements and pins after every row exists. Seed drawings ship in public/demo-docs.
+  await insert("documents", db.documents.map((d) => ({ ...d, replaced_by_id: null, created_by: mapPerson(d.created_by), obsoleted_by: mapPerson(d.obsoleted_by) })));
+  await insert("documents", db.documents.filter((d) => d.replaced_by_id).map((d) => ({ ...d, created_by: mapPerson(d.created_by), obsoleted_by: mapPerson(d.obsoleted_by) })));
+  await insert(
+    "document_revisions",
+    db.documentRevisions.map(({ file, ...r }) => ({
+      ...r,
+      site_id: db.documents.find((d) => d.id === r.document_id)!.site_id,
+      prepared_by: mapPerson(r.prepared_by),
+      reviewed_by: mapPerson(r.reviewed_by),
+      file_name: file?.name ?? null,
+      file_mime: file?.mime ?? null,
+      file_size: file?.size ?? null,
+      storage_path: file?.path ?? null,
+    })),
+  );
+  await insert("document_assets", db.documentAssets);
+  await insert("wo_documents", db.woDocuments.map((l) => ({ ...l, pinned_revision_id: null, added_by: mapPerson(l.added_by) })));
+  await insert("wo_document_views", db.woDocumentViews.map((v) => ({ ...v, viewed_by: mapPerson(v.viewed_by) })));
+  for (const l of db.woDocuments.filter((x) => x.pinned_revision_id)) {
+    const { error } = await admin.from("wo_documents").update({ pinned_revision_id: l.pinned_revision_id }).eq("id", l.id).is("pinned_revision_id", null);
+    if (error) throw new Error(`wo_documents pin: ${error.message}`);
+  }
   console.log("Done. Sign in as owen@demo.trestle.mx (data center planner) or marcus@demo.trestle.mx (plant planner).");
 }
 

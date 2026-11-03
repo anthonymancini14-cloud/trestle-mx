@@ -11,10 +11,12 @@ import { getViewer } from "@/lib/auth/viewer";
 import { checkSpares, daysBetween, dueState } from "@/lib/pm/program";
 import { assessAsset, formatAttribute, statusLabel } from "@/lib/taxonomy/assess";
 import { formatDate, formatDay, formatHours } from "@/lib/utils";
+import { canDoc } from "@/lib/workflow";
+import { DOC_TYPE_LABELS, DOC_TYPES } from "@/types/domain";
 
 export default async function AssetPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { repo } = await getViewer();
+  const { repo, profile } = await getViewer();
   const asset = await repo.getAsset(id);
   if (!asset) notFound();
 
@@ -22,7 +24,14 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
   const isCable = cls?.code === "CABLE";
   const isTray = cls?.code === "CABLE-TRAY";
   const partNumber = typeof asset.attributes.part_number === "string" ? asset.attributes.part_number : null;
-  const [inventory, schedules, siteAssets] = await Promise.all([repo.listInventory(), repo.listPmSchedules({ assetId: asset.id }), repo.listAssets()]);
+  const [inventory, schedules, siteAssets, docs] = await Promise.all([
+    repo.listInventory(),
+    repo.listPmSchedules({ assetId: asset.id }),
+    repo.listAssets(),
+    repo.listDocuments({ assetId: asset.id, includeObsolete: true }),
+  ]);
+  const activeDocs = docs.filter((d) => d.status === "active");
+  const archivedDocs = docs.filter((d) => d.status === "obsolete");
   const cableStock = isCable && partNumber ? inventory.find((i) => i.part.part_number === partNumber) : undefined;
   const today = new Date().toISOString().slice(0, 10);
   const runToFailure = cls ? cls.run_to_failure.includes(asset.criticality) : false;
@@ -196,6 +205,63 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
           </Panel>
 
           <Panel>
+            <PanelHeader
+              eyebrow="Document control"
+              title="Documents"
+              actions={
+                canDoc("author", profile.role) ? (
+                  <Link href={`/documents/new?asset=${asset.id}`} className="text-xs text-brass hover:text-brass-bright">
+                    Add a document
+                  </Link>
+                ) : (
+                  <span className="font-mono text-xs text-tx-3">{activeDocs.length}</span>
+                )
+              }
+            />
+            {activeDocs.length === 0 ? (
+              <EmptyState>No OEM manuals, drawings, specifications, procedures or MOCs linked to this asset yet.</EmptyState>
+            ) : (
+              <div className="divide-y divide-line/60">
+                {DOC_TYPES.filter((t) => activeDocs.some((d) => d.doc_type === t)).map((t) => (
+                  <div key={t} className="px-4 py-2.5">
+                    <div className="text-[11px] uppercase tracking-wider text-tx-3">{DOC_TYPE_LABELS[t]}</div>
+                    <ul className="mt-1 space-y-1">
+                      {activeDocs
+                        .filter((d) => d.doc_type === t)
+                        .map((d) => (
+                          <li key={d.id}>
+                            <Link href={`/documents/${d.id}`} className="flex min-h-9 flex-wrap items-center gap-x-2 hover:text-brass-bright">
+                              <Mono className="whitespace-nowrap text-xs">
+                                {d.doc_number} Rev {d.current?.rev ?? "—"}
+                              </Mono>
+                              <span className="text-sm">{d.title}</span>
+                              {d.pending && <Badge className="border-info/40 text-info">Rev {d.pending.rev} in review</Badge>}
+                            </Link>
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+            {archivedDocs.length > 0 && (
+              <details className="border-t border-line px-4 py-2 text-sm">
+                <summary className="cursor-pointer text-xs text-tx-3">Archive: {archivedDocs.length} obsolete</summary>
+                <ul className="mt-1 space-y-1">
+                  {archivedDocs.map((d) => (
+                    <li key={d.id}>
+                      <Link href={`/documents/${d.id}`} className="text-tx-3 hover:text-tx-2">
+                        <span className="font-mono text-xs">{d.doc_number}</span> {d.title}
+                        {d.replaced_by && <span className="text-xs"> → {d.replaced_by.doc_number}</span>}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </Panel>
+
+          <Panel>
             <PanelHeader eyebrow="Work history" title="Work orders" actions={<span className="font-mono text-xs text-tx-3">{asset.history.length}</span>} />
             {asset.history.length === 0 ? (
               <EmptyState>No work recorded on this asset.</EmptyState>
@@ -205,7 +271,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
                   <li key={w.id}>
                     <Link href={`/work-orders/${w.id}`} className="block px-4 py-2.5 hover:bg-panel-2">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Mono className="text-xs">{w.wo_number}</Mono>
+                        <Mono className="whitespace-nowrap text-xs">{w.wo_number}</Mono>
                         <PriorityBadge priority={w.priority} compact />
                         <StageBadge stage={w.stage} status={w.status} />
                         <span className="ml-auto text-xs text-tx-3">
