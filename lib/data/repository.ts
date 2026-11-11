@@ -1,5 +1,10 @@
+import type { RunOutcome } from "@/lib/ai/types";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import type {
+  AiQueueItem,
+  AiSource,
+  AiTaskName,
+  AiVerdict,
   AreaCode,
   Asset,
   AssetClassWithModes,
@@ -75,6 +80,21 @@ export interface NewTimeOffInput {
   /** Null for the whole shift. */
   hours_per_day: number | null;
   reason: string;
+}
+
+export interface NewAiJobInput {
+  task: AiTaskName;
+  source: AiSource;
+  /** The work order the text came from, if any. */
+  wo_id: string | null;
+  text: string;
+}
+
+export interface NewAiReview {
+  verdict: AiVerdict;
+  /** The reviewer's version of the output. Only with a "corrected" verdict. */
+  corrected_output: unknown | null;
+  note: string | null;
 }
 
 export interface NewWorkOrderInput {
@@ -192,4 +212,18 @@ export interface Repository {
   completeTask(taskId: string, actorId: string): Promise<void>;
   issuePart(woPartId: string, actorId: string): Promise<void>;
   closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string): Promise<void>;
+
+  /** The AI audit queue: every job at the site, newest first, with its latest run and current review. */
+  listAiQueue(): Promise<AiQueueItem[]>;
+  getAiQueueItem(jobId: string): Promise<AiQueueItem | null>;
+  /** Queue text for an AI task. Returns the job id. */
+  createAiJob(input: NewAiJobInput, actorId: string): Promise<string>;
+  /**
+   * Store what the model returned and finish the job. Demo: called by the
+   * server action after it runs the model. Live: the database lets only the
+   * worker (service role) do this, so a signed-in user's call is refused.
+   */
+  recordAiRun(jobId: string, outcome: RunOutcome): Promise<void>;
+  /** Accept, correct or reject a finished run. Reviews are never edited; the newest one stands. */
+  reviewAiRun(runId: string, input: NewAiReview, actorId: string): Promise<void>;
 }

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Boxes, CalendarCheck, CalendarDays, ClipboardList, Factory, FileText, LayoutDashboard, Library, PlusSquare, Sparkles } from "lucide-react";
+import { Boxes, CalendarCheck, CalendarDays, ClipboardList, Factory, FileText, LayoutDashboard, Library, PlusSquare, ScanSearch, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/asset-classes", label: "Class library", icon: Library },
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/inventory", label: "Storeroom", icon: Boxes },
+  { href: "/audit", label: "AI audit", icon: ScanSearch },
   { href: "/work-orders/new", label: "Report", icon: PlusSquare },
 ] as const;
 

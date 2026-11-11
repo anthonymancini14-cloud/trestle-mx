@@ -191,6 +191,26 @@ A work order on a cable shows the route, so the technician knows which tray sect
 
 ---
 
+## AI audit queue
+
+Planning Mode runs on Claude. Everything else a model does for Trestle.MX is meant to run on a **local, open-weight model** inside the site's own network, behind one task layer (`lib/ai`). The first task is **work-log extraction**: a technician's free-text log entry in, a structured record out (asset tag, symptom, failure mode, cause, action, parts used, readings, lockout, follow-up, status).
+
+| Piece | How it works |
+|---|---|
+| **Named tasks** | Each task has an output schema (zod), a prompt kept in markdown and versioned by its text, and deterministic checks. The schema goes with the request, so a server that can constrain output to JSON Schema does |
+| **Any local server** | An OpenAI-style endpoint (LM Studio, Ollama, llama.cpp, vLLM), or LM Studio's own API, which can switch a reasoning model's thinking off |
+| **Rule 1: only what the text says** | A field the entry doesn't support is empty. Checks flag a tag that isn't in the text, a reading or quantity that isn't written, and a lockout nobody mentioned. Passing the checks doesn't make a record right, so every record is still reviewed |
+| **Audit queue** | Every run lands in a queue. A planner, supervisor or admin accepts it, corrects it field by field, or rejects it with a reason. Reviews are never edited; the newest one stands. Corrections are the examples a later fine-tune learns from |
+| **Queue and worker** | In live mode the app only queues the job. A worker beside the model (`pnpm ai:worker`) claims it, runs it and writes the run back through two database functions that only the service role may call. The model machine makes outbound connections only |
+| **Close-out feed** | With `AI_AUTO_EXTRACT=on`, each close-out debrief is queued for extraction after the work order has closed. It never holds up or fails the close-out |
+| **Eval script** | `pnpm eval:worklog` scores a local model against a keyed set: exact match on tags and enums, token F1 on free text, exact numbers on readings and parts, and a count of values given where the key has none |
+
+A model reads, extracts and drafts. It never computes a number the product shows, and nothing it returns counts until a person has reviewed it.
+
+**What this is not yet.** The demo queue shows scripted outputs written by hand, some with deliberate mistakes, and says so on screen. No real model has been scored in this repo. The worker and the live-mode queries are written and type-checked, and the database side is tested (`pnpm test:db`), but they have not been run against a hosted project. An accepted record is stored as a review; it does not yet write into the troubleshooting record.
+
+---
+
 ## Sites and verticals
 
 Each site has a vertical (industrial/utility or data center). The core is the same everywhere: lifecycle, roles, Planning Mode, the class library and per-site security. The vertical picks Planning Mode's Layer 2 guidance pack and which classes apply. The top bar switches between the sites a user can access (in the demo, both sites).
@@ -222,9 +242,9 @@ Role and stage rules live in one pure module (`lib/workflow.ts`) used by both th
 | Language | TypeScript, strict |
 | UI | Tailwind CSS 4, shadcn/ui-style primitives, lucide icons |
 | Database and auth | Supabase (PostgreSQL 17, Row Level Security, Supabase Auth) |
-| AI | Anthropic Claude API, `claude-sonnet-5-5`, tool use + streaming + prompt caching |
+| AI | Planning Mode: Anthropic Claude API, `claude-sonnet-5-5`, tool use + streaming + prompt caching. Other AI tasks: a local open-weight model behind `lib/ai` (any OpenAI-style server, or LM Studio) |
 | Hosting | Vercel |
-| Tests | Vitest |
+| Tests | Vitest; SQL tests on a throwaway local Postgres (`pnpm test:db`) |
 
 ### Two data modes, one interface
 
@@ -237,9 +257,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Thirty-two tables, created in dependency order by the migrations in `supabase/migrations/`:
+Thirty-five tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site)
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site) · `ai_jobs` (per site) → `ai_runs` → `ai_reviews`
 
 ### Multi-tenancy and security
 
@@ -250,7 +270,9 @@ Thirty-two tables, created in dependency order by the migrations in `supabase/mi
 - Work orders are never deleted, only rejected or closed.
 - `commit_work_order_plan()` and `issue_work_order_part()` are `SECURITY DEFINER` functions that re-check site access, role and stage before touching inventory, so a planner can reserve stock without having write access to the inventory table.
 
-The migrations and policies are tested against Postgres (idempotent re-run, cross-site and cross-org isolation, role-gated plan commit, admin-only library changes).
+- AI runs are written only by the worker: `claim_ai_job()` and `complete_ai_job()` are granted to the service role alone. Signed-in users can queue a job at their own site and add a review; they cannot change a job, write a run, or edit or delete a review.
+
+The migrations and policies are tested against Postgres (idempotent re-run, cross-site and cross-org isolation, role-gated plan commit, admin-only library changes). `pnpm test:db` is the scripted part of that: it applies every migration twice on a throwaway local Postgres and runs the AI queue tests in `supabase/tests/`. The earlier checks are not in that script yet.
 
 ---
 
@@ -268,6 +290,17 @@ cp .env.example .env.local
 # set ANTHROPIC_API_KEY
 ```
 
+Run AI tasks on a local model (demo mode runs it in the app; live mode needs the worker):
+
+```bash
+# LM Studio, Ollama, llama.cpp or vLLM serving a model on this machine
+LOCAL_AI_BASE_URL=http://localhost:1234 LOCAL_AI_MODEL=<model> pnpm dev
+# score it: the eleven demo entries by default, or --data your-set.jsonl --split dev
+LOCAL_AI_BASE_URL=http://localhost:1234 LOCAL_AI_MODEL=<model> pnpm eval:worklog
+# live mode: the worker claims queued jobs and writes runs back
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... LOCAL_AI_BASE_URL=... LOCAL_AI_MODEL=... pnpm ai:worker
+```
+
 Live mode with Supabase:
 
 ```bash
@@ -282,6 +315,7 @@ Checks:
 
 ```bash
 pnpm typecheck && pnpm lint && pnpm test
+pnpm test:db      # needs PostgreSQL 15+ server programs on this machine
 ```
 
 ## Project structure
@@ -298,6 +332,7 @@ app/
   (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
   (app)/documents           document control: register, revisions, review, archive, file viewer
+  (app)/audit               AI audit queue: add a log entry, review what the model returned
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
 lib/
@@ -305,13 +340,16 @@ lib/
   actions.ts                server actions (every mutation)
   data/                     Repository interface, demo and Supabase implementations
   anthropic/                Claude planner, prompt, context loader, site context (layer 3)
+  ai/                       local-model task layer: tasks, prompts, providers, checks, queue, worker, eval scoring
   planning/                 plan schema, stream protocol, scripted demo planner
   taxonomy/                 asset class library, starter PM programs and data-quality checks
   pm/                       PM program logic: applicability, due dates, coverage, spares, generated plans
   assets/                   asset search for pickers
   demo/                     fictional sites: data center and utility plant
 supabase/migrations/        schema, RLS, functions
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control
+supabase/tests/             SQL tests and the Supabase stand-ins they run on
+scripts/                    live seed, AI worker, extraction eval, database tests
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control, AI tasks and the audit queue
 ```
 
 ## Design decisions
@@ -319,11 +357,20 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 - **The plan is structured data, not a chat transcript.** Chat is how the plan gets made; the plan is what gets committed, scheduled, kitted and measured.
 - **One standard, defended.** Asset classes belong to the organization, not the site. Data gaps are shown, not hidden, so the register earns trust instead of becoming a database nobody believes.
 - **History beats general knowledge.** The most valuable context is the closed work order on the sister unit. Debriefs are required at close-out because Planning Mode reads them.
-- **The assistant never commits.** It drafts and explains. The planner edits, confirms open questions and commits.
+- **The assistant never commits.** It drafts and explains. The planner edits, confirms open questions and commits. The same holds for every AI task: a run is a proposal until a person reviews it.
+- **Models never do the math.** A model reads, extracts, classifies and drafts. Counts, costs, dates and scores come from code and SQL.
+- **Local by default.** Outside Planning Mode, AI tasks are built to run on an open-weight model inside the site's network, so maintenance records don't have to leave it. Model choices are settled by eval scores, not hardcoded.
 - **Safety output is specific and marked for verification.** Named isolation points and energy types, never a bare "perform LOTO" step, and always subject to the site's written procedure.
 - **Industrial UI.** Dense tables, status always visible and always labeled, monospace for tags and part numbers, dark theme for control rooms, large touch targets for technicians on tablets.
 
 ## Roadmap
+
+Designed, not built. The direction is one database with three sides: the CMMS that runs the work, an asset management (EAM) side for decisions, and a projects side for outages and capital work.
+
+- AI audit queue: score a real local model on the extraction eval set, write accepted records into the troubleshooting record, export reviews as training examples, intake triage and history search over embeddings
+- Cost, downtime and condition data: labor rates and work order cost, asset status history, meters and readings, asset value and expected life
+- EAM: fleet and reliability views across sites, condition and risk scoring, repair-or-replace cost model, PM strategy changes approved back into the class library, capital plan
+- Projects: projects and outages whose maintenance tasks are WCEs on the same calendar, task links, budgets, closeout that adds and retires assets
 
 - Planning session history saved per work order (`planning_sessions` table)
 - Photos on findings (storage), and repeat-failure trends by asset class in the fleet view

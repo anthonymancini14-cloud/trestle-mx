@@ -213,3 +213,25 @@ export function canAttachDocument(role: Role, wo: Pick<WorkOrder, "status">): bo
 export function canDetachDocument(role: Role, wo: Pick<WorkOrder, "status">, viewCount: number): boolean {
   return wo.status === "open" && viewCount === 0 && canDoc("detach", role);
 }
+
+// ---------------------------------------------------------------- AI audit queue
+
+/**
+ * Who works the AI audit queue. A model's output is a proposal: it does
+ * nothing until a person has reviewed it.
+ */
+export const AI_RULES = {
+  /** Put text in the queue for a model to read. */
+  submit: ["planner", "supervisor", "admin"],
+  /** Accept, correct or reject what a model returned. */
+  review: ["planner", "supervisor", "admin"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export function canAi(action: keyof typeof AI_RULES, role: Role): boolean {
+  return (AI_RULES[action] as readonly Role[]).includes(role);
+}
+
+/** A run can be reviewed once it has an output. A reviewed run can be reviewed again; the newest review stands. */
+export function canReviewRun(role: Role, item: { state: string }): boolean {
+  return canAi("review", role) && ["needs_review", "accepted", "corrected", "rejected"].includes(item.state);
+}

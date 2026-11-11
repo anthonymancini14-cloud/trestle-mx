@@ -4,9 +4,15 @@ import type { JobPlan } from "@/lib/planning/plan-schema";
 import { PM_LEAD_DAYS } from "@/lib/pm/program";
 import { latestEta } from "@/lib/schedule/calendar";
 import { citedDocuments, currentRevision, storagePath } from "@/lib/documents";
-import type { NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
+import { newest, queueState } from "@/lib/ai/queue";
+import type { RunOutcome } from "@/lib/ai/types";
+import type { NewAiJobInput, NewAiReview, NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
   Addendum,
+  AiJob,
+  AiQueueItem,
+  AiReview,
+  AiRun,
   AreaCode,
   Asset,
   AssetClassWithModes,
@@ -646,6 +652,37 @@ export class SupabaseRepository implements Repository {
     return unwrap<string>(await this.db.rpc("open_wo_document", { p_wo_id: woId, p_document_id: documentId }));
   }
 
+  // ---------------------------------------------------------------- AI audit queue
+
+  async listAiQueue(): Promise<AiQueueItem[]> {
+    return unwrap<AiQueueRow[]>(await this.db.from("ai_jobs").select(AI_QUEUE_SELECT).eq("site_id", this.siteId).order("created_at", { ascending: false }).returns<AiQueueRow[]>()).map(toQueueItem);
+  }
+
+  async getAiQueueItem(jobId: string): Promise<AiQueueItem | null> {
+    const { data, error } = await this.db.from("ai_jobs").select(AI_QUEUE_SELECT).eq("site_id", this.siteId).eq("id", jobId).returns<AiQueueRow[]>().maybeSingle();
+    if (error) throw new Error(error.message);
+    return data ? toQueueItem(data as AiQueueRow) : null;
+  }
+
+  async createAiJob(input: NewAiJobInput, actorId: string): Promise<string> {
+    const row = unwrap<{ id: string }>(
+      await this.db
+        .from("ai_jobs")
+        .insert({ site_id: this.siteId, task: input.task, source: input.source, wo_id: input.wo_id, input: { text: input.text }, created_by: actorId })
+        .select("id")
+        .single(),
+    );
+    return row.id;
+  }
+
+  /** Only the worker (service role) may call complete_ai_job; under a user's session the database refuses. */
+  async recordAiRun(jobId: string, outcome: RunOutcome) {
+    unwrapVoid(await this.db.rpc("complete_ai_job", { p_job_id: jobId, p_run: outcome }));
+  }
+
+  async reviewAiRun(runId: string, input: NewAiReview, actorId: string) {
+    unwrapVoid(await this.db.from("ai_reviews").insert({ run_id: runId, verdict: input.verdict, corrected_output: input.corrected_output, note: input.note, reviewed_by: actorId }));
+  }
 }
 
 // ---------------------------------------------------------------- Document control rows
@@ -692,4 +729,23 @@ function sortModes(c: AssetClassWithModes): AssetClassWithModes {
     pm_tasks: [...(c.pm_tasks ?? [])].sort((a, b) => a.code.localeCompare(b.code)),
     spares: c.spares ?? [],
   };
+}
+
+/** A job with its runs, their reviews, the work order it came from and who queued it. */
+const AI_QUEUE_SELECT: string =
+  "*, wo:work_orders(id, wo_number, title), submitter:profiles(full_name), " +
+  "runs:ai_runs(id, job_id, provider, model, prompt_version, output, issues, raw_output, latency_ms, created_at, reviews:ai_reviews(*, reviewer:profiles(full_name)))";
+
+type AiQueueRow = AiJob & {
+  wo: AiQueueItem["wo"];
+  submitter: { full_name: string } | null;
+  runs: (AiRun & { reviews: (AiReview & { reviewer: { full_name: string } | null })[] })[];
+};
+
+function toQueueItem({ wo, submitter, runs, ...job }: AiQueueRow): AiQueueItem {
+  const latest = newest(runs ?? []);
+  const current = latest ? newest(latest.reviews ?? []) : null;
+  const run: AiRun | null = latest ? (({ reviews: _reviews, ...rest }) => rest)(latest) : null;
+  const review = current ? (({ reviewer, ...rest }) => ({ ...rest, reviewer_name: reviewer?.full_name ?? null }))(current) : null;
+  return { ...job, run, review, wo: wo ?? null, submitted_by_name: submitter?.full_name ?? null, state: queueState(job, review) };
 }

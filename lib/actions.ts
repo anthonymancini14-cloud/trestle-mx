@@ -1,18 +1,24 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { DEMO_SITE_COOKIE, DEMO_USER_COOKIE, SITE_COOKIE, demoProfileFor, getViewer } from "@/lib/auth/viewer";
+import { autoExtractOnClose } from "@/lib/ai/config";
+import { localProvider } from "@/lib/ai/providers";
+import { getTask } from "@/lib/ai/registry";
+import { runTask } from "@/lib/ai/run";
+import { worklogExtractTask } from "@/lib/ai/tasks/worklog-extract";
 import { isLiveMode } from "@/lib/config";
 import { evidenceBlocker, resolutionProblems } from "@/lib/troubleshooting";
 import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canAttachDocument, canDetachDocument, canDoc, canReview, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
-import { DOC_TYPES, FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
+import { assertCan, canAi, canReviewRun, canAttachDocument, canDetachDocument, canDoc, canReview, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
+import { AI_VERDICTS, DOC_TYPES, FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
 import { fileProblems, revisionProblems } from "@/lib/documents";
 import type { NewRevisionInput, UploadTarget } from "@/lib/data/repository";
 
@@ -107,6 +113,7 @@ export async function closeWorkOrder(woId: string, hours: number, debrief: strin
     const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn)) ?? evidenceBlocker(wo, (await repo.getTroubleshooting(woId)).resolutions);
     if (blocker) throw new WorkflowError(blocker);
     await repo.closeWorkOrder(woId, parsed.data.hours, parsed.data.debrief, profile.id);
+    await queueDebriefExtraction({ repo, profile }, woId, parsed.data.debrief);
   });
 }
 
@@ -654,4 +661,102 @@ export async function detachDocument(woId: string, documentId: string): Promise<
     },
     ({ repo, profile }) => repo.detachDocument(woId, documentId, profile.id),
   );
+}
+
+// ---------------------------------------------------------------- AI audit queue
+
+type Viewer = Awaited<ReturnType<typeof getViewer>>;
+
+const NO_LOCAL_MODEL =
+  "The demo shows scripted runs. To extract a new entry, start the app with a local model (LOCAL_AI_BASE_URL and LOCAL_AI_MODEL).";
+
+/**
+ * Run a queued job right here. Demo only: the demo store lives in this
+ * server's memory, and the model is on the same machine. In live mode the
+ * worker next to the model does this instead (scripts/ai-worker.ts).
+ */
+async function runDemoJob(repo: Viewer["repo"], jobId: string, text: string) {
+  const provider = localProvider();
+  if (!provider) return;
+  await repo.recordAiRun(jobId, await runTask(worklogExtractTask, { text }, provider));
+}
+
+/**
+ * With AI_AUTO_EXTRACT=on, a close-out debrief goes to the audit queue for
+ * extraction. It never holds up or fails the close-out: the job is queued
+ * after the work order has closed, and the model runs after the response.
+ */
+async function queueDebriefExtraction(viewer: Viewer, woId: string, debrief: string) {
+  if (!autoExtractOnClose()) return;
+  try {
+    if (viewer.repo.mode === "demo" && !localProvider()) return;
+    const jobId = await viewer.repo.createAiJob({ task: "worklog.extract", source: "wo_debrief", wo_id: woId, text: debrief }, viewer.profile.id);
+    if (viewer.repo.mode === "demo") {
+      after(() => runDemoJob(viewer.repo, jobId, debrief).catch((error) => console.error("Debrief extraction failed", error)));
+    }
+  } catch (error) {
+    console.error("Queueing the debrief for extraction failed", error);
+  }
+}
+
+const workLogSchema = z.string().trim().min(10, "Enter the log entry: at least a few words.").max(4000, "Keep one entry under 4,000 characters.");
+
+/** Put one log entry in the audit queue for extraction. Demo: runs the local model now. Live: the worker picks it up. */
+export async function submitWorkLog(text: string): Promise<{ ok: true; jobId: string } | { ok: false; error: string }> {
+  const parsed = workLogSchema.safeParse(text);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+  try {
+    const viewer = await getViewer();
+    if (!canAi("submit", viewer.profile.role)) return { ok: false, error: "Planners, supervisors and admins add entries to the audit queue." };
+    if (viewer.repo.mode === "demo" && !localProvider()) return { ok: false, error: NO_LOCAL_MODEL };
+    const jobId = await viewer.repo.createAiJob({ task: "worklog.extract", source: "manual", wo_id: null, text: parsed.data }, viewer.profile.id);
+    if (viewer.repo.mode === "demo") await runDemoJob(viewer.repo, jobId, parsed.data);
+    revalidatePath("/audit", "layout");
+    return { ok: true, jobId };
+  } catch (error) {
+    console.error("Submitting a work log failed", error);
+    return { ok: false, error: "Something went wrong adding that entry." };
+  }
+}
+
+const reviewSchema = z.object({
+  jobId: z.string().min(1),
+  verdict: z.enum(AI_VERDICTS),
+  corrected: z.unknown().optional(),
+  note: z.string().trim().max(1000).optional(),
+});
+
+/**
+ * Accept, correct or reject a run. A correction is checked against the task's
+ * schema; one that changes nothing is stored as an acceptance, so "corrected"
+ * always means the reviewer changed something.
+ */
+export async function reviewAiRun(input: z.input<typeof reviewSchema>): Promise<ActionResult> {
+  const parsed = reviewSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "That review is incomplete." };
+  const note = parsed.data.note || null;
+  try {
+    const { repo, profile } = await getViewer();
+    const item = await repo.getAiQueueItem(parsed.data.jobId);
+    if (!item || !item.run) return { ok: false, error: "That run was not found." };
+    if (!canReviewRun(profile.role, item)) return { ok: false, error: "Planners, supervisors and admins review finished runs." };
+    if (parsed.data.verdict === "rejected" && (note ?? "").length < 3) return { ok: false, error: "Say why it's rejected, so the pattern can be fixed." };
+
+    let verdict = parsed.data.verdict;
+    let corrected: unknown | null = null;
+    if (verdict === "corrected") {
+      const schema = getTask(item.task)?.outputSchema;
+      const fixed = schema?.safeParse(parsed.data.corrected);
+      if (!fixed?.success) return { ok: false, error: "The corrected record is incomplete or invalid." };
+      const original = schema!.safeParse(item.run.output);
+      if (original.success && JSON.stringify(original.data) === JSON.stringify(fixed.data)) verdict = "accepted";
+      else corrected = fixed.data;
+    }
+    await repo.reviewAiRun(item.run.id, { verdict, corrected_output: corrected, note }, profile.id);
+    revalidatePath("/audit", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Reviewing an AI run failed", error);
+    return { ok: false, error: "Something went wrong saving that review." };
+  }
 }

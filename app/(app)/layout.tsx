@@ -5,6 +5,7 @@ import { RoleSwitcher } from "@/components/shell/role-switcher";
 import { SiteSwitcher } from "@/components/shell/site-switcher";
 import { Badge } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
+import { localAiSettings } from "@/lib/ai/config";
 import { hasClaude } from "@/lib/config";
 import { ROLE_LABELS, VERTICAL_LABELS } from "@/types/domain";
 
@@ -16,6 +17,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     repo.listWorkOrders({ stage: "planning", status: "open" }),
     repo.mode === "demo" ? repo.listProfiles() : Promise.resolve([]),
   ]);
+
+  const localModel = localAiSettings();
 
   return (
     <div className="flex min-h-dvh">
@@ -59,6 +62,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               >
                 {hasClaude() ? "Claude connected" : "Scripted planner"}
               </Badge>
+              {localModel && (
+                <Badge className="hidden border-good/40 text-good lg:inline-flex" title={`AI tasks run on ${localModel.model} at ${localModel.baseUrl}`}>
+                  Local model
+                </Badge>
+              )}
               {repo.mode === "demo" ? (
                 <RoleSwitcher current={profile.id} profiles={profiles} />
               ) : (

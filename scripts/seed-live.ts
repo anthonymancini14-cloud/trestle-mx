@@ -121,6 +121,9 @@ async function main() {
     const { error } = await admin.from("wo_documents").update({ pinned_revision_id: l.pinned_revision_id }).eq("id", l.id).is("pinned_revision_id", null);
     if (error) throw new Error(`wo_documents pin: ${error.message}`);
   }
+  await insert("ai_jobs", db.aiJobs.map((j) => ({ ...j, created_by: mapPerson(j.created_by) })));
+  await insert("ai_runs", db.aiRuns);
+  await insert("ai_reviews", db.aiReviews.map((r) => ({ ...r, reviewed_by: mapPerson(r.reviewed_by) })));
   console.log("Done. Sign in as owen@demo.trestle.mx (data center planner) or marcus@demo.trestle.mx (plant planner).");
 }
 
