@@ -10,6 +10,10 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/ai/planning": ["./lib/anthropic/context/**/*.md"],
     "/planning/[id]": ["./lib/anthropic/context/**/*.md"],
+    // AI task prompts are markdown too. Server actions on these pages run a task when a local model is connected.
+    "/audit": ["./lib/ai/prompts/**/*.md"],
+    "/audit/[id]": ["./lib/ai/prompts/**/*.md"],
+    "/work-orders/[id]": ["./lib/ai/prompts/**/*.md"],
   },
   turbopack: {
     rules: {

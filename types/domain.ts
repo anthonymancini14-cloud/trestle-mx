@@ -761,3 +761,103 @@ export interface WoDocumentRow extends WoDocument {
   added_by_name: string | null;
   views: (WoDocumentView & { rev: string; viewer_name: string | null })[];
 }
+
+// ---------------------------------------------------------------- AI tasks and the audit queue
+
+/**
+ * Named AI tasks that run on a local model (lib/ai). Each one is queued as a
+ * job, produces a run, and waits for a person's review. A model proposes; it
+ * never writes to the maintenance record itself.
+ */
+export const AI_TASKS = ["worklog.extract"] as const;
+export type AiTaskName = (typeof AI_TASKS)[number];
+
+export const AI_TASK_LABELS: Record<AiTaskName, string> = {
+  "worklog.extract": "Work-log extraction",
+};
+
+/** Where the text came from. */
+export const AI_SOURCES = ["manual", "wo_debrief"] as const;
+export type AiSource = (typeof AI_SOURCES)[number];
+
+export const AI_SOURCE_LABELS: Record<AiSource, string> = {
+  manual: "Entered in the audit queue",
+  wo_debrief: "Close-out debrief",
+};
+
+export type AiJobStatus = "queued" | "running" | "done" | "failed";
+
+export interface AiJob {
+  id: string;
+  site_id: string;
+  task: AiTaskName;
+  source: AiSource;
+  /** The work order the text came from, when it came from one. */
+  wo_id: string | null;
+  input: { text: string };
+  status: AiJobStatus;
+  attempts: number;
+  error: string | null;
+  created_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+/** Something a deterministic check found in a model's output. A flag may be an invented value; a note is a consistency hint. */
+export interface AiIssue {
+  field: string;
+  severity: "flag" | "note";
+  message: string;
+}
+
+export interface AiRun {
+  id: string;
+  job_id: string;
+  /** How the model was reached: openai-compatible, lmstudio, or scripted (demo data). */
+  provider: string;
+  model: string;
+  prompt_version: string;
+  /** The task's output once it parsed and matched the schema; null when the run failed. */
+  output: unknown | null;
+  issues: AiIssue[];
+  /** The model's reply as text, kept so a failed run can be looked at. */
+  raw_output: string | null;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+export const AI_VERDICTS = ["accepted", "corrected", "rejected"] as const;
+export type AiVerdict = (typeof AI_VERDICTS)[number];
+
+/** A person's verdict on a run. Insert-only: a later review replaces an earlier one, and both stay on record. */
+export interface AiReview {
+  id: string;
+  run_id: string;
+  verdict: AiVerdict;
+  /** The reviewer's version of the output. Set only when the verdict is "corrected". */
+  corrected_output: unknown | null;
+  note: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+}
+
+export type AiQueueState = "queued" | "running" | "failed" | "needs_review" | AiVerdict;
+
+export const AI_STATE_LABELS: Record<AiQueueState, string> = {
+  queued: "Queued",
+  running: "Running",
+  failed: "Failed",
+  needs_review: "Needs review",
+  accepted: "Accepted",
+  corrected: "Corrected",
+  rejected: "Rejected",
+};
+
+/** One row of the audit queue: the job, its latest run and the current review. */
+export interface AiQueueItem extends AiJob {
+  run: AiRun | null;
+  review: (AiReview & { reviewer_name: string | null }) | null;
+  wo: Pick<WorkOrder, "id" | "wo_number" | "title"> | null;
+  submitted_by_name: string | null;
+  state: AiQueueState;
+}

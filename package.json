@@ -9,7 +9,10 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed:live": "tsx scripts/seed-live.ts"
+    "test:db": "bash scripts/db-test.sh",
+    "seed:live": "tsx scripts/seed-live.ts",
+    "ai:worker": "tsx scripts/ai-worker.ts",
+    "eval:worklog": "tsx scripts/eval-worklog.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

@@ -7,8 +7,12 @@ import { deferralNote, nextJcn, nextWceSeq, wceNumber } from "@/lib/jcn";
 import { latestEta } from "@/lib/schedule/calendar";
 import { evidenceBlocker } from "@/lib/troubleshooting";
 import { citedDocuments, currentRevision, nextDocNumber, nextRev, revisionToPin } from "@/lib/documents";
-import type { NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
+import { newest, queueState } from "@/lib/ai/queue";
+import type { RunOutcome } from "@/lib/ai/types";
+import type { NewAiJobInput, NewAiReview, NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
+  AiJob,
+  AiQueueItem,
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
@@ -948,5 +952,95 @@ export class DemoRepository implements Repository {
     if (!link) db.woDocuments.push({ id: newId(), wo_id: woId, document_id: documentId, source: "opened", pinned_revision_id: null, added_by: actorId, added_at: nowIso() });
     db.woDocumentViews.push({ id: newId(), wo_id: woId, document_id: documentId, revision_id: current.id, stage: wo.stage, viewed_by: actorId, viewed_at: nowIso() });
     return current.id;
+  }
+
+  // ---------------------------------------------------------------- AI audit queue
+
+  private aiItem(db: Dataset, job: AiJob): AiQueueItem {
+    const run = newest(db.aiRuns.filter((r) => r.job_id === job.id));
+    const review = run ? newest(db.aiReviews.filter((v) => v.run_id === run.id)) : null;
+    const wo = job.wo_id ? db.workOrders.find((w) => w.id === job.wo_id) : undefined;
+    return {
+      ...job,
+      run,
+      review: review ? { ...review, reviewer_name: nameIn(db, review.reviewed_by) } : null,
+      wo: wo ? { id: wo.id, wo_number: wo.wo_number, title: wo.title } : null,
+      submitted_by_name: nameIn(db, job.created_by),
+      state: queueState(job, review),
+    };
+  }
+
+  private requireAiJob(db: Dataset, jobId: string): AiJob {
+    const job = db.aiJobs.find((j) => j.id === jobId && j.site_id === this.siteId);
+    if (!job) throw new Error("AI job not found");
+    return job;
+  }
+
+  async listAiQueue(): Promise<AiQueueItem[]> {
+    const db = store();
+    return db.aiJobs
+      .filter((j) => j.site_id === this.siteId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((j) => this.aiItem(db, j));
+  }
+
+  async getAiQueueItem(jobId: string): Promise<AiQueueItem | null> {
+    const db = store();
+    const job = db.aiJobs.find((j) => j.id === jobId && j.site_id === this.siteId);
+    return job ? this.aiItem(db, job) : null;
+  }
+
+  async createAiJob(input: NewAiJobInput, actorId: string): Promise<string> {
+    const db = store();
+    if (input.wo_id) requireWo(db, input.wo_id, this.siteId);
+    const id = newId();
+    db.aiJobs.push({
+      id,
+      site_id: this.siteId,
+      task: input.task,
+      source: input.source,
+      wo_id: input.wo_id,
+      input: { text: input.text },
+      status: "queued",
+      attempts: 0,
+      error: null,
+      created_by: actorId,
+      created_at: nowIso(),
+      finished_at: null,
+    });
+    return id;
+  }
+
+  async recordAiRun(jobId: string, outcome: RunOutcome) {
+    const db = store();
+    const job = this.requireAiJob(db, jobId);
+    if (job.status === "done" || job.status === "failed") throw new Error("This AI job is already finished");
+    const failed = outcome.error !== null;
+    db.aiRuns.push({
+      id: newId(),
+      job_id: jobId,
+      provider: outcome.provider,
+      model: outcome.model,
+      prompt_version: outcome.prompt_version,
+      output: failed ? null : outcome.output,
+      issues: outcome.issues,
+      raw_output: outcome.raw_output,
+      latency_ms: outcome.latency_ms,
+      created_at: nowIso(),
+    });
+    job.status = failed ? "failed" : "done";
+    job.attempts += 1;
+    job.error = outcome.error;
+    job.finished_at = nowIso();
+  }
+
+  async reviewAiRun(runId: string, input: NewAiReview, actorId: string) {
+    const db = store();
+    const run = db.aiRuns.find((r) => r.id === runId);
+    if (!run) throw new Error("AI run not found");
+    const job = this.requireAiJob(db, run.job_id);
+    if (job.status !== "done" || run.output === null) throw new Error("Only a finished run can be reviewed");
+    if ((input.verdict === "corrected") !== (input.corrected_output !== null)) throw new Error("A correction carries the corrected record; nothing else does");
+    db.aiReviews.push({ id: newId(), run_id: runId, verdict: input.verdict, corrected_output: input.corrected_output, note: input.note, reviewed_by: actorId, created_at: nowIso() });
   }
 }

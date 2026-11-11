@@ -1,5 +1,6 @@
 import { seedId } from "./ids";
 import { buildDocuments, type DocumentRows } from "./documents-build";
+import { buildWorklogRows } from "./seed-worklogs";
 import {
   AREAS,
   ASSETS,
@@ -33,6 +34,9 @@ import { CLASS_PM, pmTaskCode } from "@/lib/taxonomy/pm-library";
 import { WO_STAGES } from "@/types/domain";
 import type {
   Addendum,
+  AiJob,
+  AiReview,
+  AiRun,
   FailureCode,
   Finding,
   OperatorAction,
@@ -92,6 +96,10 @@ export interface Dataset extends DocumentRows {
   tasks: WoTask[];
   woParts: WoPart[];
   events: WoEvent[];
+  /** The AI audit queue: jobs, the runs they produced and people's reviews of them. */
+  aiJobs: AiJob[];
+  aiRuns: AiRun[];
+  aiReviews: AiReview[];
 }
 
 const DAY_MS = 86_400_000;
@@ -701,6 +709,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     woParts,
     events,
     ...documents,
+    ...buildWorklogRows({ now, sites: DEMO_SITES, profiles: ALL_PROFILES }),
   };
 }
 
