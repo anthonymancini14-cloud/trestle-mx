@@ -191,6 +191,29 @@ A work order on a cable shows the route, so the technician knows which tray sect
 
 ---
 
+## Cost and downtime
+
+The first piece of the asset management side: before anyone can decide anything about an asset, the system has to know what the work on it cost and how long it was out of service.
+
+| Piece | How it works |
+|---|---|
+| **Labor rates** | An hourly rate per craft per site, from a date. A new rate is a new row; an admin sets them |
+| **Hours by person** | The crew logs hours on a work order in Execution or Closure. A technician logs their own; a supervisor logs anyone's, including a crew that isn't on the roster. The craft's rate on the work date is fixed on the entry, so a later rate change never rewrites what a job cost |
+| **Corrections, not edits** | A wrong entry is corrected by a second entry of negative hours with a note. Nothing is edited or deleted |
+| **Parts at the price when issued** | The catalog price is kept on the line as it is issued |
+| **Work order cost** | Labor plus parts, on the work order and at close-out. The work order's hours are the labor logged on it. Hours with no rate and parts with no price are counted and shown, never guessed |
+| **Status history** | Anyone at the site records that equipment went down or came back, from the asset, the work order, or the problem report ("the equipment is down right now"). The asset's status follows its latest event. Only an admin retires an asset |
+| **Planned or unplanned** | An outage that starts on preventive or project work is planned. Anything else is unplanned. Standby counts as available |
+| **Asset value and life** | Replacement value, expected life and warranty end per asset. A work order on equipment under warranty says so |
+| **Asset view** | Last 12 months: maintenance cost, cost as a share of replacement value, planned and unplanned downtime, availability, and the work orders behind each figure |
+| **Site view** | Cost and downtime for 30 days, 90 days or 12 months: by work type, the assets most spent on, the assets down longest, logged hours against estimates, and every work order closed in the period with its hours, cost and downtime |
+
+Every figure is arithmetic in `lib/cost.ts`, `lib/downtime.ts` and `lib/cost-report.ts`. No model is involved.
+
+**What this is not yet.** Demo rates, values and history are invented. There is no contractor invoice or other outside cost, only hours at a rate. History starts when the migration is applied: work closed earlier keeps its hours total but has no labor lines, so it shows no cost. Meters and readings, vendors and contracts, and a view across sites are designed, not built.
+
+---
+
 ## AI audit queue
 
 Planning Mode runs on Claude. Everything else a model does for Trestle.MX is meant to run on a **local, open-weight model** inside the site's own network, behind one task layer (`lib/ai`). The first task is **work-log extraction**: a technician's free-text log entry in, a structured record out (asset tag, symptom, failure mode, cause, action, parts used, readings, lockout, follow-up, status).
@@ -257,9 +280,9 @@ The app runs in live mode when Supabase environment variables are present, and i
 
 ### Data model
 
-Thirty-five tables, created in dependency order by the migrations in `supabase/migrations/`:
+Thirty-eight tables, created in dependency order by the migrations in `supabase/migrations/`:
 
-`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site) · `ai_jobs` (per site) → `ai_runs` → `ai_reviews`
+`organizations` → `sites` (with a vertical and scheduler roles) → `area_codes` · `profiles` → `site_access`, `crew_shifts`, `time_off` · `asset_classes` (org-wide) → `asset_class_failure_modes`, `pm_tasks`, `asset_class_spares` · `assets` (FLOC hierarchy, class and attributes) → `cable_routes` (cable → tray sections), `pm_schedules` → `pm_deferrals` · `work_orders` → `wo_tasks`, `wo_events`, `wo_parts`, `discrepancy_actions`, `wo_findings`, `wo_resolutions` → `wo_resolution_findings`, `wo_addenda`, `wo_documents`, `wo_document_views` · `documents` (per site) → `document_revisions`, `document_assets` · `failure_codes` (org-wide) · `parts_catalog` (org-wide, with specs) → `inventory` (per site) · `ai_jobs` (per site) → `ai_runs` → `ai_reviews` · `labor_rates` (per site) · `wo_labor` (hours on a work order, rate fixed on the entry) · `asset_status_events` (the asset's status follows the latest)
 
 ### Multi-tenancy and security
 
@@ -270,9 +293,10 @@ Thirty-five tables, created in dependency order by the migrations in `supabase/m
 - Work orders are never deleted, only rejected or closed.
 - `commit_work_order_plan()` and `issue_work_order_part()` are `SECURITY DEFINER` functions that re-check site access, role and stage before touching inventory, so a planner can reserve stock without having write access to the inventory table.
 
+- Labor entries, labor rates and asset status events are insert-only. A trigger fixes the rate on each labor entry and keeps the work order's hours equal to what is logged; another moves the asset's status to its latest event.
 - AI runs are written only by the worker: `claim_ai_job()` and `complete_ai_job()` are granted to the service role alone. Signed-in users can queue a job at their own site and add a review; they cannot change a job, write a run, or edit or delete a review.
 
-The migrations and policies are tested against Postgres (idempotent re-run, cross-site and cross-org isolation, role-gated plan commit, admin-only library changes). `pnpm test:db` is the scripted part of that: it applies every migration twice on a throwaway local Postgres and runs the AI queue tests in `supabase/tests/`. The earlier checks are not in that script yet.
+The migrations and policies are tested against Postgres (idempotent re-run, cross-site and cross-org isolation, role-gated plan commit, admin-only library changes). `pnpm test:db` is the scripted part of that: it applies every migration twice on a throwaway local Postgres and runs the AI queue and cost-and-downtime tests in `supabase/tests/`. The earlier checks are not in that script yet.
 
 ---
 
@@ -333,6 +357,7 @@ app/
   (app)/inventory           storeroom
   (app)/documents           document control: register, revisions, review, archive, file viewer
   (app)/audit               AI audit queue: add a log entry, review what the model returned
+  (app)/costs               cost and downtime for the site, labor rates
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
 lib/
@@ -340,6 +365,7 @@ lib/
   actions.ts                server actions (every mutation)
   data/                     Repository interface, demo and Supabase implementations
   anthropic/                Claude planner, prompt, context loader, site context (layer 3)
+  cost.ts, downtime.ts      cost and downtime arithmetic; cost-report.ts adds it up for a site
   ai/                       local-model task layer: tasks, prompts, providers, checks, queue, worker, eval scoring
   planning/                 plan schema, stream protocol, scripted demo planner
   taxonomy/                 asset class library, starter PM programs and data-quality checks
@@ -349,7 +375,7 @@ lib/
 supabase/migrations/        schema, RLS, functions
 supabase/tests/             SQL tests and the Supabase stand-ins they run on
 scripts/                    live seed, AI worker, extraction eval, database tests
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control, AI tasks and the audit queue
+tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control, AI tasks and the audit queue, cost and downtime
 ```
 
 ## Design decisions
@@ -368,7 +394,7 @@ tests/                      workflow, data integrity, Planning Mode, plan commit
 Designed, not built. The direction is one database with three sides: the CMMS that runs the work, an asset management (EAM) side for decisions, and a projects side for outages and capital work.
 
 - AI audit queue: score a real local model on the extraction eval set, write accepted records into the troubleshooting record, export reviews as training examples, intake triage and history search over embeddings
-- Cost, downtime and condition data: labor rates and work order cost, asset status history, meters and readings, asset value and expected life
+- Condition and outside cost: meters and readings, vendors and contracts, contractor invoices on a work order
 - EAM: fleet and reliability views across sites, condition and risk scoring, repair-or-replace cost model, PM strategy changes approved back into the class library, capital plan
 - Projects: projects and outages whose maintenance tasks are WCEs on the same calendar, task links, budgets, closeout that adds and retires assets
 

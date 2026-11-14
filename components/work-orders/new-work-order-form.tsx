@@ -61,6 +61,10 @@ export function NewWorkOrderForm({
         <input type="checkbox" name="requires_shutdown" className="size-4 accent-[var(--brass)]" />
         Likely needs the equipment out of service
       </label>
+      <label className="flex items-center gap-2 text-sm text-tx-2">
+        <input type="checkbox" name="asset_down" className="size-4 accent-[var(--brass)]" />
+        The equipment is down right now
+      </label>
       {state && !state.ok && (
         <p role="alert" className="text-sm text-bad">
           {state.error}

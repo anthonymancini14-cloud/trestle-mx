@@ -8,11 +8,16 @@ import { latestEta } from "@/lib/schedule/calendar";
 import { evidenceBlocker } from "@/lib/troubleshooting";
 import { citedDocuments, currentRevision, nextDocNumber, nextRev, revisionToPin } from "@/lib/documents";
 import { newest, queueState } from "@/lib/ai/queue";
+import { rateInEffect } from "@/lib/cost";
 import type { RunOutcome } from "@/lib/ai/types";
-import type { NewAiJobInput, NewAiReview, NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
+import type { AssetLifecycleInput, NewAiJobInput, NewAiReview, NewAssetStatus, NewDocumentInput, NewLaborInput, NewLaborRate, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
   AiJob,
   AiQueueItem,
+  AssetStatusEventItem,
+  Craft,
+  LaborRate,
+  WoCostRow,
   AssetClassWithModes,
   AssetDetail,
   CalendarWorkOrder,
@@ -197,6 +202,10 @@ export class DemoRepository implements Repository {
         .filter((e) => e.wo_id === id)
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
         .map((e) => ({ ...e, actor_name: db.profiles.find((p) => p.id === e.actor_id)?.full_name ?? null })),
+      labor: db.woLabor
+        .filter((l) => l.wo_id === id)
+        .sort((a, b) => a.work_date.localeCompare(b.work_date) || a.created_at.localeCompare(b.created_at))
+        .map((l) => ({ ...l, person_name: nameIn(db, l.profile_id) })),
     };
   }
 
@@ -414,6 +423,7 @@ export class DemoRepository implements Repository {
         status: canReserve ? "reserved" : "planned",
         // Short parts get an expected date from the catalog lead time; the storeroom can change it.
         expected_on: canReserve || !part?.lead_time_days ? null : addDays(todayAt("UTC"), part.lead_time_days),
+        unit_cost: null,
       });
     }
 
@@ -468,10 +478,12 @@ export class DemoRepository implements Repository {
     }
     line.status = "issued";
     line.qty_used = line.qty_required;
+    // The price today, kept with the line: a later catalog change doesn't rewrite what this job cost.
+    line.unit_cost = db.parts.find((p) => p.id === line.part_id)?.unit_cost ?? null;
     logEvent(db, { wo_id: line.wo_id, event_type: "part_issued", from_stage: null, to_stage: null, note: `${line.qty_required} × ${line.description}`, actor_id: actorId });
   }
 
-  async closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string) {
+  async closeWorkOrder(woId: string, hoursIfNoneLogged: number | null, debrief: string, actorId: string) {
     const db = store();
     const wo = requireWo(db, woId, this.siteId);
     if (wo.wce_seq === 1 && db.workOrders.some((w) => w.site_id === this.siteId && w.jcn === wo.jcn && w.id !== wo.id && w.status === "open")) {
@@ -479,9 +491,15 @@ export class DemoRepository implements Repository {
     }
     const evidence = evidenceBlocker(wo, db.resolutions.filter((r) => r.wo_id === woId));
     if (evidence) throw new Error(evidence);
+    if (!db.woLabor.some((l) => l.wo_id === woId)) {
+      if (!hoursIfNoneLogged || hoursIfNoneLogged <= 0) throw new Error("No hours are logged on this work order: enter the crew-hours");
+      // Nobody logged time: record the supervisor's figure against the assigned technician.
+      const assignee = db.profiles.find((p) => p.id === wo.assigned_to);
+      const craft: Craft = assignee?.craft ?? db.tasks.find((t) => t.wo_id === woId)?.craft ?? "mechanical";
+      this.pushLabor(db, wo, { profile_id: assignee?.id ?? null, craft, hours: hoursIfNoneLogged, work_date: todayAt(db.sites.find((x) => x.id === this.siteId)?.timezone ?? "UTC"), note: "Entered at close-out" }, actorId);
+    }
     pinWoDocuments(db, woId);
     wo.status = "closed";
-    wo.actual_hours = actualHours;
     wo.debrief = debrief;
     wo.closed_at = nowIso();
     wo.updated_at = nowIso();
@@ -1042,5 +1060,100 @@ export class DemoRepository implements Repository {
     if (job.status !== "done" || run.output === null) throw new Error("Only a finished run can be reviewed");
     if ((input.verdict === "corrected") !== (input.corrected_output !== null)) throw new Error("A correction carries the corrected record; nothing else does");
     db.aiReviews.push({ id: newId(), run_id: runId, verdict: input.verdict, corrected_output: input.corrected_output, note: input.note, reviewed_by: actorId, created_at: nowIso() });
+  }
+
+  // ---------------------------------------------------------------- Cost and downtime
+
+  async listLaborRates(): Promise<LaborRate[]> {
+    return store()
+      .laborRates.filter((r) => r.site_id === this.siteId)
+      .sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.created_at.localeCompare(a.created_at));
+  }
+
+  async setLaborRate(input: NewLaborRate, actorId: string) {
+    if (!(input.hourly_rate > 0)) throw new Error("A rate is more than zero");
+    store().laborRates.push({ id: newId(), site_id: this.siteId, ...input, created_by: actorId, created_at: nowIso() });
+  }
+
+  /** Add a labor entry at the craft's rate on the work date, and keep the work order's hours equal to what is logged. */
+  private pushLabor(db: Dataset, wo: WorkOrder, input: NewLaborInput, actorId: string) {
+    const rates = db.laborRates.filter((r) => r.site_id === wo.site_id);
+    db.woLabor.push({
+      id: newId(),
+      wo_id: wo.id,
+      ...input,
+      hourly_rate: rateInEffect(rates, input.craft, input.work_date)?.hourly_rate ?? null,
+      entered_by: actorId,
+      created_at: nowIso(),
+    });
+    wo.actual_hours = db.woLabor.filter((l) => l.wo_id === wo.id).reduce((sum, l) => sum + l.hours, 0);
+    wo.updated_at = nowIso();
+  }
+
+  async addLabor(woId: string, input: NewLaborInput, actorId: string) {
+    const db = store();
+    const wo = requireWo(db, woId, this.siteId);
+    if (wo.status !== "open" || (wo.stage !== "execution" && wo.stage !== "closure")) throw new Error("Hours are logged while the work order is in Execution or Closure");
+    if (input.hours === 0 || Math.abs(input.hours) > 24) throw new Error("Hours for one entry are between 0 and 24");
+    if (input.hours < 0 && !input.note?.trim()) throw new Error("A correction needs a note saying what it corrects");
+    const today = todayAt(db.sites.find((x) => x.id === this.siteId)?.timezone ?? "UTC");
+    if (input.work_date > today || input.work_date < wo.created_at.slice(0, 10)) throw new Error("The work date is between the day the work order was opened and today");
+    if (input.profile_id && !db.siteAccess.some((a) => a.user_id === input.profile_id && a.site_id === this.siteId)) throw new Error("That person is not on this site's roster");
+    const logged = db.woLabor.filter((l) => l.wo_id === woId).reduce((sum, l) => sum + l.hours, 0);
+    if (logged + input.hours < 0) throw new Error("A correction can't take the logged hours below zero");
+    this.pushLabor(db, wo, input, actorId);
+  }
+
+  async listWorkCosts(filter: { assetId?: string; since?: string } = {}): Promise<WoCostRow[]> {
+    const db = store();
+    return db.workOrders
+      .filter((w) => w.site_id === this.siteId)
+      .filter((w) => !filter.assetId || w.asset_id === filter.assetId)
+      .filter((w) => !filter.since || w.status === "open" || (w.closed_at !== null && w.closed_at >= filter.since))
+      .sort((a, b) => (b.closed_at ?? b.created_at).localeCompare(a.closed_at ?? a.created_at))
+      .map((w) => {
+        const asset = db.assets.find((a) => a.id === w.asset_id);
+        return {
+          id: w.id,
+          wo_number: w.wo_number,
+          title: w.title,
+          wo_type: w.wo_type,
+          status: w.status,
+          created_at: w.created_at,
+          closed_at: w.closed_at,
+          estimated_hours: w.estimated_hours,
+          asset: asset ? { id: asset.id, floc: asset.floc, name: asset.name } : null,
+          labor: db.woLabor.filter((l) => l.wo_id === w.id).map((l) => ({ craft: l.craft, hours: l.hours, hourly_rate: l.hourly_rate })),
+          parts: db.woParts.filter((p) => p.wo_id === w.id).map((p) => ({ qty_used: p.qty_used, unit_cost: p.unit_cost, status: p.status })),
+        };
+      });
+  }
+
+  async setAssetStatus(assetId: string, input: NewAssetStatus, actorId: string) {
+    const db = store();
+    const asset = db.assets.find((a) => a.id === assetId && a.site_id === this.siteId);
+    if (!asset) throw new Error("Asset not found");
+    if (asset.status === input.status) throw new Error(`The asset is already ${input.status}`);
+    if (input.wo_id && requireWo(db, input.wo_id, this.siteId).asset_id !== assetId) throw new Error("That work order is not on this asset");
+    db.assetStatusEvents.push({ id: newId(), asset_id: assetId, status: input.status, started_at: nowIso(), wo_id: input.wo_id, note: input.note, recorded_by: actorId, created_at: nowIso() });
+    asset.status = input.status;
+  }
+
+  async listAssetStatusEvents(filter: { assetId?: string } = {}): Promise<AssetStatusEventItem[]> {
+    const db = store();
+    const here = new Set(db.assets.filter((a) => a.site_id === this.siteId).map((a) => a.id));
+    return db.assetStatusEvents
+      .filter((e) => here.has(e.asset_id) && (!filter.assetId || e.asset_id === filter.assetId))
+      .sort((a, b) => a.started_at.localeCompare(b.started_at))
+      .map((e) => {
+        const wo = e.wo_id ? db.workOrders.find((w) => w.id === e.wo_id) : undefined;
+        return { ...e, recorded_by_name: nameIn(db, e.recorded_by), wo: wo ? { id: wo.id, wo_number: wo.wo_number, wo_type: wo.wo_type } : null };
+      });
+  }
+
+  async updateAssetLifecycle(assetId: string, input: AssetLifecycleInput, _actorId: string) {
+    const asset = store().assets.find((a) => a.id === assetId && a.site_id === this.siteId);
+    if (!asset) throw new Error("Asset not found");
+    Object.assign(asset, input);
   }
 }

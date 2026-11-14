@@ -25,6 +25,7 @@ export function WoActions({
   actions,
   technicians,
   estimatedHours,
+  loggedHours,
   openTasks,
   isPrimary,
   closeBlocker,
@@ -34,6 +35,8 @@ export function WoActions({
   actions: WoAction[];
   technicians: Profile[];
   estimatedHours: number | null;
+  /** Hours logged on the work order so far. Null when nobody has logged any. */
+  loggedHours: number | null;
   openTasks: number;
   /** WCE -001: its close-out is the corrective action summary for the JCN. */
   isPrimary: boolean;
@@ -146,10 +149,17 @@ export function WoActions({
 
         {visible.includes("close") && (
           <div className="space-y-2">
-            <div>
-              <Label htmlFor="close-hours">Actual crew-hours</Label>
-              <Input id="close-hours" type="number" min={0} step={0.5} value={hours} onChange={(e) => setHours(e.target.value)} />
-            </div>
+            {loggedHours === null ? (
+              <div>
+                <Label htmlFor="close-hours">Actual crew-hours</Label>
+                <Input id="close-hours" type="number" min={0} step={0.5} value={hours} onChange={(e) => setHours(e.target.value)} />
+                <p className="mt-1 text-[11px] text-tx-3">Nobody logged hours on this job. This figure is recorded against the assigned technician.</p>
+              </div>
+            ) : (
+              <p className="text-sm text-tx-2">
+                <span className="font-mono text-tx">{loggedHours} h</span> logged. To change it, add or correct hours under Labor and cost before closing.
+              </p>
+            )}
             <div>
               <Label htmlFor="close-debrief">{isPrimary ? "Corrective action summary" : "After-action debrief"}</Label>
               <Textarea
@@ -166,7 +176,7 @@ export function WoActions({
               <p className="mt-1 text-[11px] text-tx-3">Planning Mode reads this the next time this equipment comes up.</p>
             </div>
             {closeBlocker && <p className="rounded-[3px] border border-warn/40 bg-warn/10 px-2.5 py-2 text-xs text-warn">{closeBlocker}</p>}
-            <Button variant="primary" className="w-full" disabled={pending || !!closeBlocker} onClick={() => run(() => closeWorkOrder(woId, Number(hours), debrief))}>
+            <Button variant="primary" className="w-full" disabled={pending || !!closeBlocker} onClick={() => run(() => closeWorkOrder(woId, loggedHours === null ? Number(hours) : null, debrief))}>
               {isPrimary ? "Close WCE -001 and the JCN" : "Close this WCE"}
             </Button>
           </div>

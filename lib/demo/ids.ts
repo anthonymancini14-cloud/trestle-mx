@@ -36,6 +36,9 @@ const TABLE_KEYS = {
   aiJob: "01e",
   aiRun: "01f",
   aiReview: "020",
+  laborRate: "021",
+  woLabor: "022",
+  assetStatusEvent: "023",
 } as const;
 
 export type SeedTable = keyof typeof TABLE_KEYS;

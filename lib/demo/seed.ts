@@ -155,6 +155,10 @@ export const ASSETS: Asset[] = ASSET_DEFS.map((d, i) => ({
   install_date: d.installYear ? `${d.installYear}-06-01` : null,
   status: d.status ?? "running",
   notes: d.notes ?? null,
+  // Value, expected life and warranty are filled in by lib/demo/cost-build.ts.
+  replacement_value: null,
+  expected_life_years: null,
+  warranty_until: null,
 }));
 // Resolve parent FLOCs after ids exist.
 ASSET_DEFS.forEach((d, i) => {
@@ -341,12 +345,19 @@ export interface WoDef {
   rejectNote?: string;
   tasks?: TaskDef[];
   parts?: WoPartDef[];
+  /**
+   * The asset was out of service for this work. `hours` down, ending at
+   * close-out (or `endedDaysAgo` for work that is still open); or still down,
+   * since `sinceDaysAgo`. Without it the work never took the asset down.
+   */
+  down?: { hours: number; endedDaysAgo?: number } | { sinceDaysAgo: number };
 }
 
 export const WO_DEFS: WoDef[] = [
   // ---------------- Closed history (feeds Planning Mode's site context) ----------------
   {
     num: 1009,
+    down: { hours: 14 },
     title: "P-201A inboard bearing replacement",
     description: "Inboard bearing housing vibration reached 0.38 in/s overall with bearing defect frequencies present. Replace inboard and outboard bearings.",
     floc: "BRP-HSP-P-201A", type: "corrective", priority: 2, stage: "closure", status: "closed", shutdown: true,
@@ -405,6 +416,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1015,
+    down: { hours: 3 },
     title: "VFD-201B heatsink cooling fan replacement",
     description: "Drive faulted on heatsink overtemperature twice during afternoon peaks. Fan bearing noisy.",
     floc: "BRP-HSP-VFD-201B", type: "corrective", priority: 2, stage: "closure", status: "closed",
@@ -438,6 +450,7 @@ export const WO_DEFS: WoDef[] = [
   },
   {
     num: 1020,
+    down: { hours: 5, endedDaysAgo: 1 },
     title: "Deaerator vent valve rebuild",
     description: "DA vent valve passing steam continuously, visible plume from vent.",
     floc: "BRP-BLR-DA-503", type: "corrective", priority: 3, stage: "closure", shutdown: true,
@@ -582,6 +595,7 @@ export const WO_DEFS: WoDef[] = [
   // Same compressor, same symptom, 40 days earlier: the new discrepancy flags as a possible repeat.
   {
     num: 1049,
+    down: { hours: 6 },
     title: "Air compressor tripping on high discharge temperature",
     description: "C-801 tripped twice on high discharge temperature during the afternoon heat.",
     floc: "BRP-AIR-C-801", type: "corrective", priority: 2, stage: "closure", status: "closed",
@@ -645,6 +659,7 @@ export const WO_DEFS: WoDef[] = [
   // electrical locks out and uncouples the motor. Each WCE runs its own lifecycle.
   {
     num: 1041,
+    down: { sinceDaysAgo: 1.1 },
     title: "Cooling tower fan F-601 gearbox output seal replacement",
     description: "Oil film on fan deck around the gearbox output shaft, sight glass dropping about 1/4 in a week. Replace the output shaft seal before the gearbox runs low.",
     floc: "BRP-CTW-F-601", type: "corrective", priority: 3, stage: "execution", shutdown: true,

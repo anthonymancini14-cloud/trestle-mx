@@ -1,6 +1,6 @@
 # Trestle.MX — notes for Claude
 
-AI-native CMMS for industrial, utility and data center maintenance. Public portfolio project for Anthony Mancini. The centerpiece is **Planning Mode** (`app/(app)/planning/[id]`, `components/planning/`, `lib/anthropic/`, `lib/planning/`). Read `README.md` for the architecture. The local-model task layer and the AI audit queue are in `lib/ai`, `app/(app)/audit` and `components/audit/`.
+AI-native CMMS for industrial, utility and data center maintenance. Public portfolio project for Anthony Mancini. The centerpiece is **Planning Mode** (`app/(app)/planning/[id]`, `components/planning/`, `lib/anthropic/`, `lib/planning/`). Read `README.md` for the architecture. The local-model task layer and the AI audit queue are in `lib/ai`, `app/(app)/audit` and `components/audit/`. Cost and downtime are in `lib/cost*.ts`, `lib/downtime.ts`, `app/(app)/costs` and the work order and asset pages.
 
 ## Hard rules
 
@@ -10,7 +10,7 @@ AI-native CMMS for industrial, utility and data center maintenance. Public portf
 - **Locked stack:** Next.js (App Router), TypeScript strict, Tailwind + shadcn-style primitives, Supabase, Vercel, pnpm. Don't swap libraries without asking.
 - **Runtime AI is local by default** (decided 2026-11-11). AI tasks run on a local open-weight model behind the task layer in `lib/ai`, reached through any OpenAI-style server or LM Studio. Claude is an optional tier and stays the default for Planning Mode (`claude-sonnet-5-5` via `ANTHROPIC_MODEL`) until a local model passes a plan eval. Model choices are set by eval scores, not hardcoded. Claude is still the build tool.
 - **Models never compute numbers and never commit.** A model reads, extracts, classifies and drafts. Counts, costs, dates and scores come from code and SQL. Every AI output is a proposal a person reviews (the audit queue).
-- **Direction: three sides on one database** (CMMS, EAM, Projects). Only the CMMS and the AI audit queue are built. Anything else is "designed" in the README until it is in the repo.
+- **Direction: three sides on one database** (CMMS, EAM, Projects). Built so far: the CMMS, the AI audit queue, and cost and downtime (the first piece of the EAM side). Anything else is "designed" in the README until it is in the repo.
 - **Pushing to `main` deploys to Vercel.** Before every push to main: `pnpm typecheck && pnpm lint && pnpm test && pnpm build` must pass. Use a branch + PR for anything large.
 
 ## Conventions
@@ -21,6 +21,8 @@ AI-native CMMS for industrial, utility and data center maintenance. Public portf
 - AI tasks live in `lib/ai`: one task = an output schema (zod), a prompt in `lib/ai/prompts/*.md`, deterministic checks, and an entry in `lib/ai/registry.ts`. Keep `lib/ai` free of `server-only` so the worker and eval scripts can import it. Schema and checks that client components need go in a file with no Node imports (see `tasks/worklog-schema.ts`).
 - AI runs are written by the worker only (`claim_ai_job`, `complete_ai_job`, service role). The demo runs the model in the server action instead. Reviews are insert-only.
 - A demo output that no model produced is labeled "scripted" on screen. Never present scripted output as a model run or quote an eval score that isn't recorded.
+- Cost and downtime arithmetic lives in `lib/cost.ts`, `lib/downtime.ts` and `lib/cost-report.ts`, pure and tested. Pages call them; nothing recomputes a figure inline. A line with no rate or no price is counted and shown, never guessed.
+- Labor entries, labor rates and asset status events are insert-only. A correction is a new row (negative hours with a note; a new rate from a date; a new status event). A work order's `actual_hours` is the sum of its labor, kept by trigger in live mode and by the repository in the demo.
 - Demo plans in `lib/planning/demo-plans.ts` must validate against `jobPlanSchema` and only cite catalog part numbers (tests enforce this).
 - Migrations: `supabase/migrations/YYYYMMDDHHMMSS_name.sql`, idempotent, RLS enabled and policies in the same file, `site_access` pattern for site scoping, rollback notes at the bottom.
 - UI: dense, industrial, status always labeled, monospace for tags/WO numbers/part numbers, 44px targets on technician views.
