@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ShieldCheck } from "lucide-react";
 import { CableRoutePanel } from "@/components/assets/cable-panels";
+import { AssetStatusControl } from "@/components/assets/status-control";
+import { LaborPanel } from "@/components/work-orders/labor-panel";
 import { LifecycleStepper } from "@/components/work-orders/lifecycle-stepper";
 import { PartsTable } from "@/components/work-orders/parts-table";
 import { TaskList } from "@/components/work-orders/task-list";
@@ -9,14 +11,17 @@ import { WoActions } from "@/components/work-orders/wo-actions";
 import { CriticalityBadge, PriorityBadge, StageBadge, TypeLabel } from "@/components/status";
 import { EmptyState, Mono, Panel, PanelHeader } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
-import { formatDate, formatDateTime, formatHours } from "@/lib/utils";
+import { underWarranty, woCost } from "@/lib/cost";
+import { currentStatus, formatDuration, woDowntimeHours } from "@/lib/downtime";
+import { statusLabel } from "@/lib/taxonomy/assess";
+import { formatDate, formatDateTime, formatDay, formatHours, todayAt } from "@/lib/utils";
 import { availableActions, canAddWce, canDefer, canRecord, primaryCloseBlocker } from "@/lib/workflow";
 import { currentResolution, DEFAULT_REPEAT_WINDOW_DAYS, EVIDENCE_TYPES, evidenceBlocker, repeatCheck, type RepeatCheck } from "@/lib/troubleshooting";
 import { TroubleshootingPanel } from "@/components/work-orders/troubleshooting-panel";
 import { daysBetween } from "@/lib/pm/program";
 import { JobPanel } from "@/components/work-orders/job-panel";
 import { WoDocumentsPanel } from "@/components/documents/wo-documents-panel";
-import { canAttachDocument, canDoc } from "@/lib/workflow";
+import { canAttachDocument, canDoc, canLogLabor } from "@/lib/workflow";
 
 export default async function WorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -31,13 +36,25 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
   const primary = job.find((w) => w.wce_seq === 1) ?? wo;
   const deferredFrom = wo.deferred_from_wo_id ? await repo.getWorkOrder(wo.deferred_from_wo_id) : null;
   const deferredTo = wo.deferred_to_jcn ? (await repo.listJcn(wo.deferred_to_jcn)).find((w) => w.wce_seq === 1) : undefined;
-  const [record, codes, assetHistory, woDocs, siteDocs] = await Promise.all([
+  const [record, codes, assetHistory, woDocs, siteDocs, statusEvents] = await Promise.all([
     repo.getTroubleshooting(wo.id),
     repo.listFailureCodes(),
     wo.asset ? repo.listResolutions({ assetId: wo.asset.id }) : Promise.resolve([]),
     repo.listWoDocuments(wo.id),
     repo.listDocuments(),
+    wo.asset ? repo.listAssetStatusEvents({ assetId: wo.asset.id }) : Promise.resolve([]),
   ]);
+  // Cost and downtime: worked out here from the logged lines, never by a model.
+  const cost = woCost(wo.labor, wo.parts);
+  const now = new Date().toISOString();
+  const today = todayAt(site.timezone);
+  const assetNow = currentStatus(statusEvents);
+  const downOnThis = woDowntimeHours(statusEvents, wo.id, now);
+  const stillDownOnThis = asset?.status === "down" && assetNow?.wo_id === wo.id;
+  const warranty = asset && underWarranty(asset.warranty_until, today) ? asset.warranty_until : null;
+  const crew = profiles
+    .filter((p) => p.is_active && (p.role === "technician" || p.role === "operator"))
+    .map((p) => ({ id: p.id, full_name: p.full_name, craft: p.craft ?? (p.role === "operator" ? ("operations" as const) : null) }));
   const onWo = new Set(woDocs.map((d) => d.document_id));
   const assetDocs = wo.asset ? siteDocs.filter((d) => !onWo.has(d.id) && d.current && d.assets.some((a) => a.id === wo.asset!.id)) : [];
   const evidence = evidenceBlocker(wo, record.resolutions);
@@ -107,6 +124,13 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
         <div className="hazard-stripe flex items-center gap-2 rounded-[3px] border border-warn/40 px-3 py-2 text-sm text-warn">
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
           Requires the equipment out of service. Coordinate the window with operations.
+        </div>
+      )}
+
+      {warranty && wo.status === "open" && (
+        <div className="flex items-center gap-2 rounded-[3px] border border-info/40 bg-info/10 px-3 py-2 text-sm text-info">
+          <ShieldCheck className="size-4 shrink-0" aria-hidden />
+          This equipment is under warranty until {formatDay(warranty)}. Check what the warranty covers before spending on parts or outside labor.
         </div>
       )}
 
@@ -208,6 +232,20 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
               />
             )}
           </Panel>
+
+          <LaborPanel
+            woId={wo.id}
+            labor={wo.labor}
+            cost={cost}
+            estimatedHours={wo.estimated_hours}
+            legacyHours={wo.labor.length === 0 ? wo.actual_hours : null}
+            canLog={canLogLabor(profile.role, wo)}
+            ownOnly={profile.role === "technician"}
+            self={{ id: profile.id, full_name: profile.full_name, craft: profile.craft }}
+            people={crew}
+            today={today}
+            earliest={wo.created_at.slice(0, 10)}
+          />
         </div>
 
         <aside className="space-y-4">
@@ -216,11 +254,32 @@ export default async function WorkOrderPage({ params }: { params: Promise<{ id: 
             actions={actions}
             technicians={technicians}
             estimatedHours={wo.estimated_hours}
+            loggedHours={wo.labor.length > 0 ? cost.laborHours : null}
             openTasks={wo.tasks.filter((t) => !t.is_complete).length}
             isPrimary={wo.wce_seq === 1}
             closeBlocker={closeBlocker}
             canDefer={canDefer(profile.role, wo)}
           />
+
+          {asset && (
+            <Panel>
+              <PanelHeader eyebrow="Equipment" title={statusLabel(asset.status, asset.asset_class?.code)} />
+              <div className="space-y-2.5 px-4 py-3 text-sm">
+                <p className={asset.status === "down" ? "text-bad" : "text-tx-2"}>
+                  {assetNow ? `${statusLabel(asset.status, asset.asset_class?.code)} since ${formatDateTime(assetNow.from)}.` : "No status history yet."}
+                  {downOnThis > 0 && (
+                    <>
+                      {" "}
+                      <span className="text-tx">
+                        Down <span className="font-mono">{formatDuration(downOnThis)}</span> on this work order{stillDownOnThis ? " so far" : ""}.
+                      </span>
+                    </>
+                  )}
+                </p>
+                {wo.status === "open" && asset.status !== "retired" && <AssetStatusControl assetId={asset.id} status={asset.status} woId={wo.id} canRetire={false} />}
+              </div>
+            </Panel>
+          )}
 
           <Panel>
             <PanelHeader title="Details" />

@@ -2,6 +2,11 @@ import type { RunOutcome } from "@/lib/ai/types";
 import type { JobPlan } from "@/lib/planning/plan-schema";
 import type {
   AiQueueItem,
+  AssetStatus,
+  AssetStatusEventItem,
+  Craft,
+  LaborRate,
+  WoCostRow,
   AiSource,
   AiTaskName,
   AiVerdict,
@@ -80,6 +85,35 @@ export interface NewTimeOffInput {
   /** Null for the whole shift. */
   hours_per_day: number | null;
   reason: string;
+}
+
+export interface NewLaborInput {
+  /** Who did the work. Null for a crew that isn't on the roster. */
+  profile_id: string | null;
+  craft: Craft;
+  /** Person-hours. Negative corrects an earlier entry and needs a note. */
+  hours: number;
+  work_date: string;
+  note: string | null;
+}
+
+export interface NewLaborRate {
+  craft: Craft;
+  hourly_rate: number;
+  effective_from: string;
+}
+
+export interface NewAssetStatus {
+  status: AssetStatus;
+  /** The work order the change belongs to. It must be on this asset. */
+  wo_id: string | null;
+  note: string | null;
+}
+
+export interface AssetLifecycleInput {
+  replacement_value: number | null;
+  expected_life_years: number | null;
+  warranty_until: string | null;
 }
 
 export interface NewAiJobInput {
@@ -211,7 +245,12 @@ export interface Repository {
   scheduleWorkOrder(woId: string, date: string, assigneeId: string, actorId: string): Promise<void>;
   completeTask(taskId: string, actorId: string): Promise<void>;
   issuePart(woPartId: string, actorId: string): Promise<void>;
-  closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string): Promise<void>;
+  /**
+   * Close a work order. Its hours are the labor logged on it. `hoursIfNoneLogged`
+   * is for a job nobody logged time on: it is recorded as one labor entry for
+   * the assigned technician, so every closed work order has hours and a cost.
+   */
+  closeWorkOrder(woId: string, hoursIfNoneLogged: number | null, debrief: string, actorId: string): Promise<void>;
 
   /** The AI audit queue: every job at the site, newest first, with its latest run and current review. */
   listAiQueue(): Promise<AiQueueItem[]>;
@@ -226,4 +265,21 @@ export interface Repository {
   recordAiRun(jobId: string, outcome: RunOutcome): Promise<void>;
   /** Accept, correct or reject a finished run. Reviews are never edited; the newest one stands. */
   reviewAiRun(runId: string, input: NewAiReview, actorId: string): Promise<void>;
+
+  /** Every labor rate set at the site, newest first. The rate in effect is worked out in lib/cost.ts. */
+  listLaborRates(): Promise<LaborRate[]>;
+  /** Set a craft's rate from a date. A new row; earlier rates and the hours costed at them stay as they were. */
+  setLaborRate(input: NewLaborRate, actorId: string): Promise<void>;
+  /** Log hours on an open work order in Execution or Closure. The craft's rate on the work date is fixed on the entry. */
+  addLabor(woId: string, input: NewLaborInput, actorId: string): Promise<void>;
+  /**
+   * Work orders with the labor and part lines that make up their cost, newest
+   * first. `since` keeps open work and work closed on or after that instant.
+   */
+  listWorkCosts(filter?: { assetId?: string; since?: string }): Promise<WoCostRow[]>;
+  /** Record a change in an asset's operating status. The asset's status follows its latest event. */
+  setAssetStatus(assetId: string, input: NewAssetStatus, actorId: string): Promise<void>;
+  /** Status history, oldest first: one asset's, or the whole site's. */
+  listAssetStatusEvents(filter?: { assetId?: string }): Promise<AssetStatusEventItem[]>;
+  updateAssetLifecycle(assetId: string, input: AssetLifecycleInput, actorId: string): Promise<void>;
 }

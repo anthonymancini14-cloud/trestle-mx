@@ -1,5 +1,6 @@
 import { seedId } from "./ids";
 import { buildDocuments, type DocumentRows } from "./documents-build";
+import { buildCostRows } from "./cost-build";
 import { buildWorklogRows } from "./seed-worklogs";
 import {
   AREAS,
@@ -37,6 +38,7 @@ import type {
   AiJob,
   AiReview,
   AiRun,
+  AssetStatusEvent,
   FailureCode,
   Finding,
   OperatorAction,
@@ -50,6 +52,7 @@ import type {
   CrewShift,
   FailureMode,
   InventoryRow,
+  LaborRate,
   Organization,
   Part,
   PmDeferral,
@@ -59,6 +62,7 @@ import type {
   Site,
   TimeOff,
   WoEvent,
+  WoLabor,
   WoPart,
   WoTask,
   WorkOrder,
@@ -96,6 +100,10 @@ export interface Dataset extends DocumentRows {
   tasks: WoTask[];
   woParts: WoPart[];
   events: WoEvent[];
+  /** Cost and downtime: labor rates, hours on work orders, and each asset's status history. */
+  laborRates: LaborRate[];
+  woLabor: WoLabor[];
+  assetStatusEvents: AssetStatusEvent[];
   /** The AI audit queue: jobs, the runs they produced and people's reviews of them. */
   aiJobs: AiJob[];
   aiRuns: AiRun[];
@@ -575,6 +583,8 @@ export function buildDataset(now: Date = new Date()): Dataset {
           qty_used: p.used ?? 0,
           status,
           expected_on: status === "planned" && p.etaInDays !== undefined ? dateIn(p.etaInDays) : null,
+          // Set for issued lines by buildCostRows.
+          unit_cost: null,
         });
         // Open reservations hold stock until the part is issued.
         if (pid && (status === "reserved" || status === "kitted")) {
@@ -686,6 +696,22 @@ export function buildDataset(now: Date = new Date()): Dataset {
     created_at: at(5),
   }));
 
+  // Copies, so the demo store (and the status history below) never edits the seed.
+  const assets = ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } }));
+  const cost = buildCostRows({
+    now,
+    sites: DEMO_SITES,
+    profiles: ALL_PROFILES,
+    siteAccess: SITE_ACCESS,
+    assets,
+    classCodeById: new Map(library.assetClasses.map((c) => [c.id, c.code])),
+    workOrders,
+    tasks,
+    woParts,
+    parts: ALL_PARTS,
+    seedRows,
+  });
+
   return {
     org: ORG,
     // Copies, so a settings change in the demo store never edits the seed.
@@ -700,7 +726,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     timeOff,
     failureCodes: FAILURE_CODES.map((c, i) => ({ id: seedId("failureCode", i + 1), org_id: ORG.id, class_id: null, ...c })),
     ...record,
-    assets: ALL_ASSETS.map((a) => ({ ...a, attributes: { ...a.attributes } })),
+    assets,
     cableRoutes: buildCableRoutes(),
     parts: ALL_PARTS,
     inventory,
@@ -709,6 +735,7 @@ export function buildDataset(now: Date = new Date()): Dataset {
     woParts,
     events,
     ...documents,
+    ...cost,
     ...buildWorklogRows({ now, sites: DEMO_SITES, profiles: ALL_PROFILES }),
   };
 }

@@ -111,9 +111,18 @@ export interface Asset {
   model: string | null;
   serial_number: string | null;
   install_date: string | null;
-  status: "running" | "standby" | "down" | "retired";
+  status: AssetStatus;
   notes: string | null;
+  /** What it would cost to replace today, for comparing against what is spent maintaining it. */
+  replacement_value: number | null;
+  /** Design life from the install date, in years. */
+  expected_life_years: number | null;
+  /** Last day of the manufacturer's or installer's warranty. */
+  warranty_until: string | null;
 }
+
+export const ASSET_STATUSES = ["running", "standby", "down", "retired"] as const;
+export type AssetStatus = (typeof ASSET_STATUSES)[number];
 
 export type AttributeValue = string | number | boolean;
 export type AssetAttributes = Record<string, AttributeValue>;
@@ -394,6 +403,8 @@ export interface WoPart {
   status: WoPartStatus;
   /** For a part not yet on site (status planned): when it is expected. Null = no date yet. */
   expected_on: string | null;
+  /** The catalog price when the line was issued. Kept so a later price change doesn't rewrite what a job cost. Null until issued, or for a part with no catalog price. */
+  unit_cost: number | null;
 }
 
 /** Joined shapes used by the UI. */
@@ -406,6 +417,7 @@ export interface WorkOrderDetail extends WorkOrderListItem {
   tasks: WoTask[];
   parts: (WoPart & { part: Part | null; stock: InventoryRow | null })[];
   events: (WoEvent & { actor_name: string | null })[];
+  labor: (WoLabor & { person_name: string | null })[];
 }
 
 export interface AssetDetail extends Asset {
@@ -860,4 +872,61 @@ export interface AiQueueItem extends AiJob {
   wo: Pick<WorkOrder, "id" | "wo_number" | "title"> | null;
   submitted_by_name: string | null;
   state: AiQueueState;
+}
+
+// ---------------------------------------------------------------- Cost and downtime
+
+/** What an hour of a craft costs at a site, from a date. A new rate is a new row; history is never rewritten. */
+export interface LaborRate {
+  id: string;
+  site_id: string;
+  craft: Craft;
+  hourly_rate: number;
+  effective_from: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+/**
+ * Hours a person worked on a work order. Insert-only: a mistake is corrected
+ * with a second entry of negative hours and a note.
+ */
+export interface WoLabor {
+  id: string;
+  wo_id: string;
+  /** Who did the work. Null for a crew that isn't on the roster. */
+  profile_id: string | null;
+  craft: Craft;
+  hours: number;
+  work_date: string;
+  note: string | null;
+  /** The craft's rate on the work date, fixed when the entry was made. Null if the site had no rate for the craft. */
+  hourly_rate: number | null;
+  entered_by: string | null;
+  created_at: string;
+}
+
+/** A change in an asset's operating status. The asset's current status is its latest event. Insert-only. */
+export interface AssetStatusEvent {
+  id: string;
+  asset_id: string;
+  status: AssetStatus;
+  started_at: string;
+  /** The work order the change belongs to, if any. Downtime that starts on a preventive or project work order counts as planned. */
+  wo_id: string | null;
+  note: string | null;
+  recorded_by: string | null;
+  created_at: string;
+}
+
+export interface AssetStatusEventItem extends AssetStatusEvent {
+  recorded_by_name: string | null;
+  wo: Pick<WorkOrder, "id" | "wo_number" | "wo_type"> | null;
+}
+
+/** A work order with the lines that make up its cost. The arithmetic is in lib/cost.ts. */
+export interface WoCostRow extends Pick<WorkOrder, "id" | "wo_number" | "title" | "wo_type" | "status" | "created_at" | "closed_at" | "estimated_hours"> {
+  asset: Pick<Asset, "id" | "floc" | "name"> | null;
+  labor: Pick<WoLabor, "craft" | "hours" | "hourly_rate">[];
+  parts: Pick<WoPart, "qty_used" | "unit_cost" | "status">[];
 }

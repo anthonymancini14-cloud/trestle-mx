@@ -6,10 +6,14 @@ import { latestEta } from "@/lib/schedule/calendar";
 import { citedDocuments, currentRevision, storagePath } from "@/lib/documents";
 import { newest, queueState } from "@/lib/ai/queue";
 import type { RunOutcome } from "@/lib/ai/types";
-import type { NewAiJobInput, NewAiReview, NewDocumentInput, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
+import type { AssetLifecycleInput, NewAiJobInput, NewAiReview, NewAssetStatus, NewDocumentInput, NewLaborInput, NewLaborRate, NewFinding, NewOperatorAction, NewResolution, NewRevisionInput, NewTimeOffInput, NewWorkOrderInput, Repository, RevisionFileContent, UploadTarget, WorkOrderFilter } from "./repository";
 import type {
   Addendum,
   AiJob,
+  AssetStatusEventItem,
+  LaborRate,
+  WoCostRow,
+  WoLabor,
   AiQueueItem,
   AiReview,
   AiRun,
@@ -129,7 +133,7 @@ export class SupabaseRepository implements Repository {
     const { data, error } = await this.db.from("work_orders").select(WO_LIST_SELECT).eq("id", id).maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) return null;
-    const [tasks, parts, events] = await Promise.all([
+    const [tasks, parts, events, labor] = await Promise.all([
       this.db.from("wo_tasks").select("*").eq("wo_id", id).order("seq"),
       this.db.from("wo_parts").select("*, part:parts_catalog(*)").eq("wo_id", id),
       this.db
@@ -137,6 +141,8 @@ export class SupabaseRepository implements Repository {
         .select("*, actor:profiles(full_name)")
         .eq("wo_id", id)
         .order("created_at", { ascending: false }),
+      // wo_labor points at profiles twice (who worked, who entered it), so the join names the one it means.
+      this.db.from("wo_labor").select("*, person:profiles!wo_labor_profile_id_fkey(full_name)").eq("wo_id", id).order("work_date").order("created_at"),
     ]);
     const partRows = unwrap<(WoPart & { part: Part | null })[]>(parts);
     const partIds = partRows.map((p) => p.part_id).filter((x): x is string => !!x);
@@ -153,6 +159,7 @@ export class SupabaseRepository implements Repository {
         ...e,
         actor_name: actor?.full_name ?? null,
       })),
+      labor: unwrap<(WoLabor & { person: { full_name: string } | null })[]>(labor).map(({ person, ...l }) => ({ ...l, person_name: person?.full_name ?? null })),
     };
   }
 
@@ -470,13 +477,19 @@ export class SupabaseRepository implements Repository {
     unwrapVoid(await this.db.rpc("issue_work_order_part", { p_wo_part_id: woPartId }));
   }
 
-  async closeWorkOrder(woId: string, actualHours: number, debrief: string, actorId: string) {
-    unwrapVoid(
-      await this.db
-        .from("work_orders")
-        .update({ status: "closed", actual_hours: actualHours, debrief, closed_at: new Date().toISOString() })
-        .eq("id", woId),
-    );
+  async closeWorkOrder(woId: string, hoursIfNoneLogged: number | null, debrief: string, actorId: string) {
+    const logged = unwrap<{ id: string }[]>(await this.db.from("wo_labor").select("id").eq("wo_id", woId).limit(1));
+    if (logged.length === 0) {
+      if (!hoursIfNoneLogged || hoursIfNoneLogged <= 0) throw new Error("No hours are logged on this work order: enter the crew-hours");
+      // Nobody logged time: record the supervisor's figure against the assigned technician.
+      const wo = unwrap<{ assigned_to: string | null; assignee: { craft: Craft | null } | null; tasks: { craft: Craft; seq: number }[] }>(
+        await this.db.from("work_orders").select("assigned_to, assignee:profiles!work_orders_assigned_to_fkey(craft), tasks:wo_tasks(craft, seq)").eq("id", woId).single(),
+      );
+      const craft: Craft = wo.assignee?.craft ?? [...wo.tasks].sort((a, b) => a.seq - b.seq)[0]?.craft ?? "mechanical";
+      await this.addLabor(woId, { profile_id: wo.assigned_to, craft, hours: hoursIfNoneLogged, work_date: new Date().toISOString().slice(0, 10), note: "Entered at close-out" }, actorId);
+    }
+    // actual_hours is kept by the database: it is the sum of the labor logged.
+    unwrapVoid(await this.db.from("work_orders").update({ status: "closed", debrief, closed_at: new Date().toISOString() }).eq("id", woId));
     await this.logEvent(woId, { event_type: "closed", from_stage: "closure", to_stage: null, note: debrief }, actorId);
   }
 
@@ -650,6 +663,54 @@ export class SupabaseRepository implements Repository {
 
   async openWoDocument(woId: string, documentId: string, _actorId: string): Promise<string> {
     return unwrap<string>(await this.db.rpc("open_wo_document", { p_wo_id: woId, p_document_id: documentId }));
+  }
+
+  // ---------------------------------------------------------------- Cost and downtime
+
+  async listLaborRates(): Promise<LaborRate[]> {
+    return unwrap<LaborRate[]>(
+      await this.db.from("labor_rates").select("*").eq("site_id", this.siteId).order("effective_from", { ascending: false }).order("created_at", { ascending: false }),
+    );
+  }
+
+  async setLaborRate(input: NewLaborRate, actorId: string) {
+    unwrapVoid(await this.db.from("labor_rates").insert({ site_id: this.siteId, ...input, created_by: actorId }));
+  }
+
+  /** The database fixes the rate on the entry and keeps the work order's hours equal to what is logged. */
+  async addLabor(woId: string, input: NewLaborInput, actorId: string) {
+    unwrapVoid(await this.db.from("wo_labor").insert({ wo_id: woId, ...input, entered_by: actorId }));
+  }
+
+  async listWorkCosts(filter: { assetId?: string; since?: string } = {}): Promise<WoCostRow[]> {
+    let query = this.db
+      .from("work_orders")
+      .select("id, wo_number, title, wo_type, status, created_at, closed_at, estimated_hours, asset:assets(id, floc, name), labor:wo_labor(craft, hours, hourly_rate), parts:wo_parts(qty_used, unit_cost, status)")
+      .eq("site_id", this.siteId);
+    if (filter.assetId) query = query.eq("asset_id", filter.assetId);
+    if (filter.since) query = query.or(`status.eq.open,closed_at.gte.${filter.since}`);
+    const rows = unwrap<WoCostRow[]>(await query.returns<WoCostRow[]>());
+    return rows.sort((a, b) => (b.closed_at ?? b.created_at).localeCompare(a.closed_at ?? a.created_at));
+  }
+
+  /** A trigger checks the change and moves the asset's status to match. */
+  async setAssetStatus(assetId: string, input: NewAssetStatus, actorId: string) {
+    unwrapVoid(await this.db.from("asset_status_events").insert({ asset_id: assetId, ...input, recorded_by: actorId }));
+  }
+
+  async listAssetStatusEvents(filter: { assetId?: string } = {}): Promise<AssetStatusEventItem[]> {
+    type Row = Omit<AssetStatusEventItem, "recorded_by_name"> & { recorder: { full_name: string } | null; asset: unknown };
+    let query = this.db
+      .from("asset_status_events")
+      .select("*, recorder:profiles(full_name), wo:work_orders(id, wo_number, wo_type), asset:assets!inner(site_id)")
+      .eq("asset.site_id", this.siteId)
+      .order("started_at");
+    if (filter.assetId) query = query.eq("asset_id", filter.assetId);
+    return unwrap<Row[]>(await query.returns<Row[]>()).map(({ recorder, asset: _asset, ...e }) => ({ ...e, recorded_by_name: recorder?.full_name ?? null }));
+  }
+
+  async updateAssetLifecycle(assetId: string, input: AssetLifecycleInput, _actorId: string) {
+    unwrapVoid(await this.db.from("assets").update(input).eq("id", assetId).eq("site_id", this.siteId));
   }
 
   // ---------------------------------------------------------------- AI audit queue

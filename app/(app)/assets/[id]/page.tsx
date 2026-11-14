@@ -2,16 +2,21 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { CableRoutePanel, CableSpecPanel, CarriedCablesPanel } from "@/components/assets/cable-panels";
+import { CostDowntimePanel } from "@/components/assets/cost-downtime-panel";
 import { DataQualityBadge } from "@/components/assets/data-quality";
+import { LifecycleForm } from "@/components/assets/lifecycle-form";
+import { AssetStatusControl } from "@/components/assets/status-control";
 import { DueBadge, intervalLabel, StrategyBadge } from "@/components/pm/pm-badges";
 import { CriticalityBadge, PriorityBadge, StageBadge } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Badge, EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
 import { getViewer } from "@/lib/auth/viewer";
+import { formatMoney, lifeStanding, underWarranty } from "@/lib/cost";
+import { statusIntervals, formatDuration } from "@/lib/downtime";
 import { checkSpares, daysBetween, dueState } from "@/lib/pm/program";
 import { assessAsset, formatAttribute, statusLabel } from "@/lib/taxonomy/assess";
-import { formatDate, formatDay, formatHours } from "@/lib/utils";
-import { canDoc } from "@/lib/workflow";
+import { formatDate, formatDateTime, formatDay, formatHours } from "@/lib/utils";
+import { canCost, canDoc } from "@/lib/workflow";
 import { DOC_TYPE_LABELS, DOC_TYPES } from "@/types/domain";
 
 export default async function AssetPage({ params }: { params: Promise<{ id: string }> }) {
@@ -24,18 +29,27 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
   const isCable = cls?.code === "CABLE";
   const isTray = cls?.code === "CABLE-TRAY";
   const partNumber = typeof asset.attributes.part_number === "string" ? asset.attributes.part_number : null;
-  const [inventory, schedules, siteAssets, docs] = await Promise.all([
+  const [inventory, schedules, siteAssets, docs, costRows, statusEvents] = await Promise.all([
     repo.listInventory(),
     repo.listPmSchedules({ assetId: asset.id }),
     repo.listAssets(),
     repo.listDocuments({ assetId: asset.id, includeObsolete: true }),
+    repo.listWorkCosts({ assetId: asset.id }),
+    repo.listAssetStatusEvents({ assetId: asset.id }),
   ]);
+  const now = new Date().toISOString();
+  // Newest first, with how long each status lasted.
+  const statusHistory = statusIntervals(statusEvents)
+    .map((interval, i) => ({ ...interval, event: [...statusEvents].sort((a, b) => a.started_at.localeCompare(b.started_at))[i] }))
+    .reverse();
   const activeDocs = docs.filter((d) => d.status === "active");
   const archivedDocs = docs.filter((d) => d.status === "obsolete");
   const cableStock = isCable && partNumber ? inventory.find((i) => i.part.part_number === partNumber) : undefined;
   const today = new Date().toISOString().slice(0, 10);
   const runToFailure = cls ? cls.run_to_failure.includes(asset.criticality) : false;
   const spares = cls && asset.criticality === "A" ? checkSpares(cls, siteAssets.filter((a) => a.id === asset.id), inventory) : [];
+  const life = lifeStanding(asset.install_date, asset.expected_life_years, today);
+  const inWarranty = underWarranty(asset.warranty_until, today);
   const assessment = assessAsset(asset, cls);
   const issueByKey = new Map(assessment.issues.map((i) => [i.spec.key, i]));
 
@@ -113,6 +127,75 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
             )}
           </Panel>
 
+          <Panel>
+            <PanelHeader eyebrow="Operating status" title={statusLabel(asset.status, cls?.code)} />
+            <div className="space-y-3 px-4 py-3">
+              <AssetStatusControl assetId={asset.id} status={asset.status} woId={null} canRetire={profile.role === "admin"} />
+              {statusHistory.length === 0 ? (
+                <p className="text-xs text-tx-3">No status history yet. It starts with the first change recorded here.</p>
+              ) : (
+                <ol className="space-y-2">
+                  {statusHistory.slice(0, 6).map((h) => (
+                    <li key={h.event.id} className="border-l-2 border-line-strong pl-3 text-xs">
+                      <div className={h.status === "down" ? "text-bad" : "text-tx-2"}>
+                        <span className="font-medium">{statusLabel(h.status, cls?.code)}</span>
+                        {h.status === "down" && <span className="text-tx-3"> · {h.planned ? "planned" : "unplanned"}</span>}
+                        <span className="text-tx-3"> · {formatDuration((Date.parse(h.to ?? now) - Date.parse(h.from)) / 3_600_000)}{h.to ? "" : " so far"}</span>
+                      </div>
+                      {h.event.note && <p className="text-tx-3">{h.event.note}</p>}
+                      <div className="font-mono text-[10px] text-tx-3">
+                        {h.from.slice(0, 4) === now.slice(0, 4) ? formatDateTime(h.from) : formatDay(h.from)}
+                        {h.event.recorded_by_name && ` · ${h.event.recorded_by_name}`}
+                        {h.event.wo && (
+                          <>
+                            {" · "}
+                            <Link href={`/work-orders/${h.event.wo.id}`} className="text-brass-bright hover:underline">
+                              {h.event.wo.wo_number}
+                            </Link>
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          </Panel>
+
+          <Panel>
+            <PanelHeader eyebrow="Lifecycle" title="Value and life" />
+            <dl className="space-y-2 px-4 py-3 text-sm">
+              <div>
+                <dt className="text-[11px] uppercase tracking-wider text-tx-3">Replacement value</dt>
+                <dd className="font-mono">{formatMoney(asset.replacement_value)}</dd>
+              </div>
+              <div>
+                <dt className="text-[11px] uppercase tracking-wider text-tx-3">Age and expected life</dt>
+                <dd>
+                  {life ? `${life.ageYears} yr in service` : "No install date"}
+                  {asset.expected_life_years !== null && ` of ${asset.expected_life_years} expected`}
+                  {life?.remainingYears !== null && life?.remainingYears !== undefined && (
+                    <span className={life.remainingYears <= 2 ? "text-warn" : "text-tx-3"}>
+                      {" "}
+                      · {life.remainingYears >= 0 ? `${life.remainingYears} yr left` : `${-life.remainingYears} yr past it`}
+                    </span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[11px] uppercase tracking-wider text-tx-3">Warranty</dt>
+                <dd className={inWarranty ? "text-info" : undefined}>
+                  {asset.warranty_until ? `${inWarranty ? "Until" : "Ended"} ${formatDay(asset.warranty_until)}` : "—"}
+                </dd>
+              </div>
+              {canCost("edit_lifecycle", profile.role) && (
+                <div className="pt-1">
+                  <LifecycleForm assetId={asset.id} value={asset.replacement_value} life={asset.expected_life_years} warranty={asset.warranty_until} />
+                </div>
+              )}
+            </dl>
+          </Panel>
+
           {cls && (
             <Panel>
               <PanelHeader eyebrow={cls.code} title="Class attributes" actions={<DataQualityBadge assessment={assessment} />} />
@@ -146,6 +229,7 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
           {isTray && <CarriedCablesPanel cables={asset.carried_cables} />}
+          <CostDowntimePanel rows={costRows} events={statusEvents} replacementValue={asset.replacement_value} now={now} />
           <Panel>
             <PanelHeader eyebrow="PM program" title="PM schedule" actions={<span className="font-mono text-xs text-tx-3">{schedules.length}</span>} />
             {schedules.length === 0 ? (

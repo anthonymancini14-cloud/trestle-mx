@@ -235,3 +235,29 @@ export function canAi(action: keyof typeof AI_RULES, role: Role): boolean {
 export function canReviewRun(role: Role, item: { state: string }): boolean {
   return canAi("review", role) && ["needs_review", "accepted", "corrected", "rejected"].includes(item.state);
 }
+
+// ---------------------------------------------------------------- Cost and downtime
+
+/** Who keeps the numbers behind cost: rates, hours and what an asset is worth. */
+export const COST_RULES = {
+  /** Set what an hour of a craft costs at the site. */
+  set_rate: ["admin"],
+  /** Log hours on a work order. A technician logs their own. */
+  log_labor: ["technician", "supervisor", "admin"],
+  /** Record an asset's replacement value, expected life and warranty. */
+  edit_lifecycle: ["planner", "admin"],
+} as const satisfies Record<string, readonly Role[]>;
+
+export function canCost(action: keyof typeof COST_RULES, role: Role): boolean {
+  return (COST_RULES[action] as readonly Role[]).includes(role);
+}
+
+/** Hours go on open work in Execution or Closure: while it is being done, and until the supervisor closes it. */
+export function canLogLabor(role: Role, wo: Pick<WorkOrder, "status" | "stage">): boolean {
+  return canCost("log_labor", role) && wo.status === "open" && (wo.stage === "execution" || wo.stage === "closure");
+}
+
+/** Anyone at the site can record that equipment went down or came back. Retiring an asset is an admin's call. */
+export function canSetAssetStatus(role: Role, status: string): boolean {
+  return status === "retired" ? role === "admin" : true;
+}

@@ -92,6 +92,10 @@ async function main() {
   await insert("wo_tasks", db.tasks);
   await insert("wo_parts", db.woParts);
   await insert("wo_events", db.events.map((e) => ({ ...e, actor_id: mapPerson(e.actor_id) })));
+  // Cost and downtime history. Rates first: the labor rows carry the rate they were costed at.
+  await insert("labor_rates", db.laborRates.map((r) => ({ ...r, created_by: mapPerson(r.created_by) })));
+  await insert("wo_labor", db.woLabor.map((l) => ({ ...l, profile_id: mapPerson(l.profile_id), entered_by: mapPerson(l.entered_by) })));
+  await insert("asset_status_events", db.assetStatusEvents.map((e) => ({ ...e, recorded_by: mapPerson(e.recorded_by) })));
   await insert("failure_codes", db.failureCodes);
   await insert("discrepancy_actions", db.operatorActions.map((a) => ({ ...a, created_by: mapPerson(a.created_by) })));
   await insert("wo_findings", db.findings.map((f) => ({ ...f, created_by: mapPerson(f.created_by) })));

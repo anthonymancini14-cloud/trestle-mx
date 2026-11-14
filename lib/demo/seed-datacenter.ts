@@ -193,6 +193,9 @@ export const DC_ASSETS: Asset[] = DC_ASSET_DEFS.map((d, i) => ({
   install_date: d.installYear ? `${d.installYear}-03-01` : null,
   status: d.status ?? "running",
   notes: d.notes ?? null,
+  replacement_value: null,
+  expected_life_years: null,
+  warranty_until: null,
 }));
 DC_ASSET_DEFS.forEach((d, i) => {
   if (d.parent) {
@@ -384,6 +387,7 @@ export const DC_WO_DEFS: WoDef[] = [
   },
   {
     num: 2002,
+    down: { hours: 7 },
     pm: "UPS-STATIC-PM01",
     title: "UPS-A1 annual preventive maintenance (OEM)",
     description: "Annual OEM preventive maintenance on UPS module A1 under MOP; A side at N for the duration.",
@@ -438,6 +442,7 @@ export const DC_WO_DEFS: WoDef[] = [
   // ---------------- Closure ----------------
   {
     num: 2004,
+    down: { hours: 9, endedDaysAgo: 2 },
     pm: "CHILLER-PM04",
     title: "Chiller CH-02 condenser tube cleaning",
     description: "Approach temperature on CH-02 condenser rising; scheduled tube brushing with the chiller off line and CH-01 carrying load.",

@@ -17,8 +17,8 @@ import { todayAt } from "@/lib/utils";
 import { resetDemoStore } from "@/lib/data/demo-repository";
 import { ALL_PROFILES, DEMO_SITES } from "@/lib/demo/dataset";
 import { jobPlanSchema, type JobPlan } from "@/lib/planning/plan-schema";
-import { assertCan, canAi, canReviewRun, canAttachDocument, canDetachDocument, canDoc, canReview, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
-import { AI_VERDICTS, DOC_TYPES, FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type WorkOrderDetail } from "@/types/domain";
+import { assertCan, canAi, canCost, canLogLabor, canSetAssetStatus, canReviewRun, canAttachDocument, canDetachDocument, canDoc, canReview, canAddWce, canDefer, canPm, canRecord, canReschedule, canScheduleAt, nextStage, primaryCloseBlocker, WorkflowError, type WoAction } from "@/lib/workflow";
+import { AI_VERDICTS, ASSET_STATUSES, CRAFTS, DOC_TYPES, FINDING_RESULTS, OPERATOR_REVIEWS, ROLES, type Craft, type WorkOrderDetail } from "@/types/domain";
 import { fileProblems, revisionProblems } from "@/lib/documents";
 import type { NewRevisionInput, UploadTarget } from "@/lib/data/repository";
 
@@ -102,17 +102,23 @@ export async function submitCompletion(woId: string) {
   });
 }
 
-const closeSchema = z.object({ hours: z.coerce.number().min(0).max(1000), debrief: z.string().trim().min(10) });
+const closeSchema = z.object({ hours: z.coerce.number().min(0).max(1000).nullable(), debrief: z.string().trim().min(10) });
 
-export async function closeWorkOrder(woId: string, hours: number, debrief: string) {
+/**
+ * Close a work order. Its hours are the labor logged on it; `hours` is only
+ * for a job nobody logged time on, and is recorded as a labor entry.
+ */
+export async function closeWorkOrder(woId: string, hours: number | null, debrief: string) {
   const parsed = closeSchema.safeParse({ hours, debrief });
   if (!parsed.success) {
-    return { ok: false, error: "Enter actual hours and a debrief of at least a sentence: it feeds the next plan." } satisfies ActionResult;
+    return { ok: false, error: "Enter a debrief of at least a sentence: it feeds the next plan." } satisfies ActionResult;
   }
   return withWorkOrder(woId, "close", async ({ repo, profile, wo }) => {
     const blocker = primaryCloseBlocker(wo, await repo.listJcn(wo.jcn)) ?? evidenceBlocker(wo, (await repo.getTroubleshooting(woId)).resolutions);
     if (blocker) throw new WorkflowError(blocker);
-    await repo.closeWorkOrder(woId, parsed.data.hours, parsed.data.debrief, profile.id);
+    const noneLogged = wo.labor.length === 0;
+    if (noneLogged && !(parsed.data.hours && parsed.data.hours > 0)) throw new WorkflowError("No hours are logged on this work order. Enter the crew-hours it took.");
+    await repo.closeWorkOrder(woId, noneLogged ? parsed.data.hours : null, parsed.data.debrief, profile.id);
     await queueDebriefExtraction({ repo, profile }, woId, parsed.data.debrief);
   });
 }
@@ -137,6 +143,17 @@ function parseNewWo(form: FormData) {
   });
 }
 
+/** The reporter ticked "the equipment is down": start the outage on this work order. Never blocks the report. */
+async function markDownOnReport(repo: Awaited<ReturnType<typeof getViewer>>["repo"], form: FormData, assetId: string | null, woId: string, actorId: string) {
+  if (form.get("asset_down") !== "on" || !assetId) return;
+  try {
+    const asset = await repo.getAsset(assetId);
+    if (asset && asset.status !== "down" && asset.status !== "retired") await repo.setAssetStatus(assetId, { status: "down", wo_id: woId, note: null }, actorId);
+  } catch (error) {
+    console.error("Recording the equipment as down failed", error);
+  }
+}
+
 /** Report a discrepancy: a new JCN, written up as WCE -001. */
 export async function createWorkOrder(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   const parsed = parseNewWo(form);
@@ -146,6 +163,7 @@ export async function createWorkOrder(_prev: ActionResult | null, form: FormData
     { ...parsed.data, priority: parsed.data.priority as 1 | 2 | 3 | 4, asset_id: parsed.data.asset_id ?? null },
     profile.id,
   );
+  await markDownOnReport(repo, form, parsed.data.asset_id ?? null, id, profile.id);
   revalidatePath("/", "layout");
   redirect(`/work-orders/${id}`);
 }
@@ -758,5 +776,109 @@ export async function reviewAiRun(input: z.input<typeof reviewSchema>): Promise<
   } catch (error) {
     console.error("Reviewing an AI run failed", error);
     return { ok: false, error: "Something went wrong saving that review." };
+  }
+}
+
+// ---------------------------------------------------------------- Cost and downtime
+
+const laborSchema = z.object({
+  profile_id: z.string().min(1).nullable(),
+  craft: z.enum(CRAFTS as [Craft, ...Craft[]]),
+  hours: z.coerce.number().min(-24).max(24).refine((h) => h !== 0, "Enter the hours."),
+  work_date: isoDate,
+  note: z.string().trim().max(300).optional(),
+});
+
+/** Log hours on a work order. A technician logs their own; a supervisor or admin logs anyone's, including a crew that isn't on the roster. */
+export async function logLabor(woId: string, input: z.input<typeof laborSchema>): Promise<ActionResult> {
+  const parsed = laborSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the hours." };
+  const note = parsed.data.note || null;
+  if (parsed.data.hours < 0 && !note) return { ok: false, error: "A correction needs a note saying what it corrects." };
+  try {
+    const { repo, profile } = await getViewer();
+    const wo = await repo.getWorkOrder(woId);
+    if (!wo) return { ok: false, error: "Work order not found." };
+    if (!canLogLabor(profile.role, wo)) return { ok: false, error: "Hours are logged by the crew, a supervisor or an admin while the work order is in Execution or Closure." };
+    if (profile.role === "technician" && parsed.data.profile_id !== profile.id) return { ok: false, error: "Technicians log their own hours. A supervisor logs someone else's." };
+    const logged = wo.labor.reduce((sum, l) => sum + l.hours, 0);
+    if (logged + parsed.data.hours < 0) return { ok: false, error: "A correction can't take the logged hours below zero." };
+    await repo.addLabor(woId, { ...parsed.data, note }, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Logging labor failed", error);
+    return { ok: false, error: error instanceof Error && /work date|roster/i.test(error.message) ? `${error.message}.` : "Something went wrong logging those hours." };
+  }
+}
+
+const rateSchema = z.object({
+  craft: z.enum(CRAFTS as [Craft, ...Craft[]]),
+  hourly_rate: z.coerce.number().positive("Enter a rate above zero.").max(1000),
+  effective_from: isoDate,
+});
+
+/** Set a craft's hourly rate from a date. Hours already logged keep the rate they were entered at. */
+export async function setLaborRate(input: z.input<typeof rateSchema>): Promise<ActionResult> {
+  const parsed = rateSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the rate." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canCost("set_rate", profile.role)) return { ok: false, error: "An admin sets labor rates." };
+    await repo.setLaborRate(parsed.data, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Setting a labor rate failed", error);
+    return { ok: false, error: "Something went wrong saving that rate." };
+  }
+}
+
+const statusSchema = z.object({
+  status: z.enum(ASSET_STATUSES),
+  wo_id: z.string().min(1).nullable(),
+  note: z.string().trim().max(300).optional(),
+});
+
+/** Record that an asset went down, came back, went to standby or was retired. */
+export async function setAssetStatus(assetId: string, input: z.input<typeof statusSchema>): Promise<ActionResult> {
+  const parsed = statusSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Choose a status." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canSetAssetStatus(profile.role, parsed.data.status)) return { ok: false, error: "Retiring an asset is an admin's call." };
+    const asset = await repo.getAsset(assetId);
+    if (!asset) return { ok: false, error: "Asset not found." };
+    if (asset.status === parsed.data.status) return { ok: false, error: "The asset already has that status." };
+    if (asset.status === "retired" && profile.role !== "admin") return { ok: false, error: "This asset is retired. An admin can put it back in the register." };
+    await repo.setAssetStatus(assetId, { status: parsed.data.status, wo_id: parsed.data.wo_id, note: parsed.data.note || null }, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Setting an asset's status failed", error);
+    return { ok: false, error: "Something went wrong saving that status." };
+  }
+}
+
+const lifecycleSchema = z.object({
+  replacement_value: z.coerce.number().positive().max(1_000_000_000).nullable(),
+  expected_life_years: z.coerce.number().int().positive().max(150).nullable(),
+  warranty_until: isoDate.nullable(),
+});
+
+/** Record what an asset would cost to replace, how long it is expected to last, and when its warranty ends. */
+export async function updateAssetLifecycle(assetId: string, input: z.input<typeof lifecycleSchema>): Promise<ActionResult> {
+  const parsed = lifecycleSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Enter a value above zero, a whole number of years and a date, or leave a field empty." };
+  try {
+    const { repo, profile } = await getViewer();
+    if (!canCost("edit_lifecycle", profile.role)) return { ok: false, error: "A planner or admin records an asset's value, life and warranty." };
+    if (!(await repo.getAsset(assetId))) return { ok: false, error: "Asset not found." };
+    await repo.updateAssetLifecycle(assetId, parsed.data, profile.id);
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch (error) {
+    console.error("Updating an asset's lifecycle data failed", error);
+    return { ok: false, error: "Something went wrong saving that." };
   }
 }
