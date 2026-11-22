@@ -335,7 +335,9 @@ app/
   (app)/audit               AI audit queue: add a log entry, review what the model returned
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
+components/shell/           sidebar and phone nav, grouped into CMMS, EAM and Project management
 lib/
+  nav.ts                    navigation groups; unbuilt Project management pages show as "Designed"
   workflow.ts               lifecycle rules
   actions.ts                server actions (every mutation)
   data/                     Repository interface, demo and Supabase implementations
@@ -349,7 +351,7 @@ lib/
 supabase/migrations/        schema, RLS, functions
 supabase/tests/             SQL tests and the Supabase stand-ins they run on
 scripts/                    live seed, AI worker, extraction eval, database tests
-tests/                      workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control, AI tasks and the audit queue
+tests/                      navigation, workflow, data integrity, Planning Mode, plan commit, class library, PM program, cable plant, sites, document control, AI tasks and the audit queue
 ```
 
 ## Design decisions
