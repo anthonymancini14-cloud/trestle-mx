@@ -332,10 +332,10 @@ app/
   (app)/pm                  PM program: maintenance index, generation, deferrals
   (app)/inventory           storeroom
   (app)/documents           document control: register, revisions, review, archive, file viewer
-  (app)/audit               AI audit queue: add a log entry, review what the model returned
+  (app)/audit               AI audit queue: add a log entry, review what the model returned; ?area= picks the area to audit
   api/ai/planning           Planning Mode stream
 components/planning/        workspace (chat + live plan) and plan editor
-components/shell/           sidebar and phone nav, grouped into CMMS, EAM and Project management
+components/shell/           sidebar and phone nav: CMMS, EAM, Project management and AI audit groups
 lib/
   nav.ts                    navigation groups; unbuilt Project management pages show as "Designed"
   workflow.ts               lifecycle rules

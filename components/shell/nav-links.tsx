@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronDown } from "lucide-react";
 import { Badge } from "@/components/ui/primitives";
 import { DASHBOARD_LINK, NAV_GROUPS, activeGroupId, isActiveHref, type NavGroup, type NavLink } from "@/lib/nav";
@@ -12,7 +12,7 @@ type GroupId = NavGroup["id"];
 
 /**
  * Grouped app navigation. The sidebar (vertical) shows CMMS, EAM and
- * Project management as collapsible groups; the group holding the current
+ * Project management, plus AI audit, as collapsible groups; the group holding the current
  * page starts open. The phone bar (horizontal) shows the groups as tabs,
  * with the chosen group's pages in a second row.
  */
@@ -24,15 +24,17 @@ export function NavLinks({
   orientation: "vertical" | "horizontal";
 }) {
   const pathname = usePathname();
-  const currentGroup = activeGroupId(pathname);
+  const area = useSearchParams().get("area");
+  const currentGroup = activeGroupId(pathname, area);
 
   // Groups the person opened or closed by hand. A group not listed here is
   // open when it holds the current page.
   const [toggled, setToggled] = useState<Partial<Record<GroupId, boolean>>>({});
-  const [lastPath, setLastPath] = useState(pathname);
-  if (lastPath !== pathname) {
+  const location = area ? `${pathname}?area=${area}` : pathname;
+  const [lastLocation, setLastLocation] = useState(location);
+  if (lastLocation !== location) {
     // Navigating into a group always opens it, even if it was closed by hand.
-    setLastPath(pathname);
+    setLastLocation(location);
     if (currentGroup && toggled[currentGroup] === false) {
       setToggled((prev) => {
         const next = { ...prev };
@@ -48,6 +50,7 @@ export function NavLinks({
     return (
       <HorizontalNav
         pathname={pathname}
+        area={area}
         currentGroup={currentGroup}
         planningCount={planningCount}
         isOpen={isOpen}
@@ -62,7 +65,7 @@ export function NavLinks({
 
   return (
     <nav aria-label="Main" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto p-2">
-      <NavItem link={DASHBOARD_LINK} pathname={pathname} planningCount={planningCount} />
+      <NavItem link={DASHBOARD_LINK} pathname={pathname} area={area} planningCount={planningCount} />
       {NAV_GROUPS.map((group) => {
         const open = isOpen(group.id);
         const panelId = `nav-group-${group.id}`;
@@ -88,7 +91,7 @@ export function NavLinks({
             </button>
             <div id={panelId} hidden={!open} className="ml-3 mt-0.5 flex flex-col gap-0.5 border-l border-line pl-1.5">
               {group.links.map((link) => (
-                <NavItem key={link.label} link={link} pathname={pathname} planningCount={planningCount} />
+                <NavItem key={link.label} link={link} pathname={pathname} area={area} planningCount={planningCount} />
               ))}
             </div>
           </div>
@@ -100,12 +103,14 @@ export function NavLinks({
 
 function HorizontalNav({
   pathname,
+  area,
   currentGroup,
   planningCount,
   isOpen,
   onSelect,
 }: {
   pathname: string;
+  area: string | null;
   currentGroup: GroupId | null;
   planningCount: number;
   isOpen: (id: GroupId) => boolean;
@@ -115,7 +120,7 @@ function HorizontalNav({
   return (
     <nav aria-label="Main">
       <div className="flex gap-1 overflow-x-auto px-2 py-1.5">
-        <NavItem link={DASHBOARD_LINK} pathname={pathname} planningCount={planningCount} compact />
+        <NavItem link={DASHBOARD_LINK} pathname={pathname} area={area} planningCount={planningCount} compact />
         {NAV_GROUPS.map((group) => {
           const open = openGroup?.id === group.id;
           return (
@@ -140,7 +145,7 @@ function HorizontalNav({
       {openGroup && (
         <div id="nav-group-row" className="flex gap-1 overflow-x-auto border-t border-line px-2 py-1.5">
           {openGroup.links.map((link) => (
-            <NavItem key={link.label} link={link} pathname={pathname} planningCount={planningCount} compact />
+            <NavItem key={link.label} link={link} pathname={pathname} area={area} planningCount={planningCount} compact />
           ))}
         </div>
       )}
@@ -151,11 +156,13 @@ function HorizontalNav({
 function NavItem({
   link,
   pathname,
+  area,
   planningCount,
   compact = false,
 }: {
   link: NavLink;
   pathname: string;
+  area: string | null;
   planningCount: number;
   compact?: boolean;
 }) {
@@ -172,7 +179,7 @@ function NavItem({
     );
   }
 
-  const active = isActiveHref(href, pathname);
+  const active = isActiveHref(href, pathname, area);
   return (
     <Link
       href={href}
