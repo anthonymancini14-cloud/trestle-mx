@@ -1,17 +1,20 @@
 import Link from "next/link";
 import { AiStateBadge, FlagBadge } from "@/components/audit/audit-badges";
 import { IntakeForm } from "@/components/audit/intake-form";
-import { EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
+import { Badge, EmptyState, Mono, Panel, PanelHeader, Table, Td, Th } from "@/components/ui/primitives";
 import { hasLocalModel, localAiSettings } from "@/lib/ai/config";
 import { flagCount, SCRIPTED_PROVIDER, summarizeQueue } from "@/lib/ai/queue";
 import { getViewer } from "@/lib/auth/viewer";
+import { AUDIT_AREAS, auditArea } from "@/lib/nav";
 import { cn, formatDateTime } from "@/lib/utils";
 import { canAi } from "@/lib/workflow";
 import { AI_SOURCE_LABELS, AI_TASK_LABELS } from "@/types/domain";
 
 export const metadata = { title: "AI audit" };
 
-export default async function AuditPage() {
+export default async function AuditPage({ searchParams }: { searchParams: Promise<{ area?: string }> }) {
+  const { area: areaParam } = await searchParams;
+  const area = auditArea(areaParam);
   const { repo, profile } = await getViewer();
   const items = await repo.listAiQueue();
   const summary = summarizeQueue(items);
@@ -34,6 +37,32 @@ export default async function AuditPage() {
           as an example of what right looks like.
         </p>
       </div>
+
+      <nav aria-label="Audit area" className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-tx-3">Audit area</span>
+        <Link
+          href="/audit"
+          aria-current={area ? undefined : "page"}
+          className={cn("rounded-[3px] border px-2.5 py-1", area ? "border-line-strong text-tx-2 hover:text-tx" : "border-brass-dim bg-panel-2 text-tx")}
+        >
+          All
+        </Link>
+        {AUDIT_AREAS.map((a) => (
+          <Link
+            key={a.id}
+            href={`/audit?area=${a.id}`}
+            aria-current={area?.id === a.id ? "page" : undefined}
+            className={cn("rounded-[3px] border px-2.5 py-1", area?.id === a.id ? "border-brass-dim bg-panel-2 text-tx" : "border-line-strong text-tx-2 hover:text-tx")}
+          >
+            {a.label}
+          </Link>
+        ))}
+        {area && (
+          <Badge className="border-line-strong text-tx-3" title="Saying what to audit in plain words is designed, not built">
+            Audit conversation for {area.label}: designed
+          </Badge>
+        )}
+      </nav>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Tile label="Needs review" value={String(summary.needsReview)} note={summary.waiting ? `${summary.waiting} still with the model` : "Finished runs waiting on a person"} tone={summary.needsReview ? "brass" : "neutral"} />
